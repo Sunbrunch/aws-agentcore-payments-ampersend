@@ -1,0 +1,14 @@
+# Environment files with secrets
+.env
+!.env.sample
+
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Archives
+*.zip
