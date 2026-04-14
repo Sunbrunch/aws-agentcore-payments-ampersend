@@ -9,8 +9,7 @@
 #   - bedrock-agentcore-control (Control Plane)
 #   - bedrock-agentcore        (Data Plane)
 #
-# Run once before using setup_manager.py.
-# This is NOT required for setup_manager.sh (which uses awscurl directly).
+# Run once before using setup_manager.py / boto3.
 # =============================================================
 
 set -euo pipefail
@@ -46,9 +45,15 @@ mkdir -p "$DP_DEST_DIR"
 cp "$DP_MODEL_FILE" "$DP_DEST_DIR/service-2.json"
 echo "  ✅ Installed at: $DP_DEST_DIR/service-2.json"
 
-# ── Verification ────────────────────────────────────────────────
+# ── Verification (optional; requires boto3) ─────────────────────
 echo ""
 echo "Verifying Payment operations are available:"
+if ! python3 -c "import boto3" 2>/dev/null; then
+    echo "  ⚠️  boto3 not installed — skipping Python check."
+    echo "     Models are installed under ~/.aws/models (this step succeeded)."
+    echo "     Install boto3 before setup_manager:  pip install boto3 python-dotenv"
+    exit 0
+fi
 python3 -c "
 import boto3
 

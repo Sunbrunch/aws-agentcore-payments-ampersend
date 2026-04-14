@@ -18,6 +18,8 @@ cp .env.sample .env   # fill in values from quickstart output
 bash e2e-test.sh
 ```
 
+The script **sources** `.env` with bash. Every value must be safe for that: **do not** use unquoted `VAR=<text>` — the `<` starts input redirection. Use **single quotes**, e.g. `MANAGER_ARN='arn:aws:bedrock-agentcore:...'` (see `.env.sample`).
+
 ## Prerequisites
 
 - AWS CLI v2 with service models installed (`bash quickstart/setup_model.sh`)

@@ -37,7 +37,8 @@ except ImportError:
     sys.exit("python-dotenv is not installed. Run: pip install boto3 python-dotenv")
 
 # ── Load configuration ──────────────────────────────────────────
-load_dotenv()
+_ENV_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_ENV_DIR, ".env"))
 
 def require_env(key: str) -> str:
     val = os.environ.get(key, "").strip()
@@ -45,12 +46,32 @@ def require_env(key: str) -> str:
         sys.exit(f"Missing or placeholder value for {key} in .env")
     return val
 
+
+def optional_endpoint(key: str) -> str | None:
+    """HTTPS endpoint override from .env; omit key or use placeholder → use boto3 default."""
+    val = os.environ.get(key, "").strip()
+    if not val or val.startswith("<"):
+        return None
+    return val
+
+
 COINBASE_API_KEY_ID          = require_env("COINBASE_API_KEY_ID")
 COINBASE_API_KEY_SECRET      = require_env("COINBASE_API_KEY_SECRET")
 COINBASE_WALLET_SECRET       = require_env("COINBASE_WALLET_SECRET")
 AWS_REGION                   = os.environ.get("AWS_REGION", "us-west-2")
-CREDENTIAL_PROVIDER_ENDPOINT = require_env("CREDENTIAL_PROVIDER_ENDPOINT")
-PAYMENTS_CP_ENDPOINT         = require_env("PAYMENTS_CP_ENDPOINT")
+# Optional: if unset, boto3 uses its regional default for bedrock-agentcore-control
+CREDENTIAL_PROVIDER_ENDPOINT = optional_endpoint("CREDENTIAL_PROVIDER_ENDPOINT")
+PAYMENTS_CP_ENDPOINT         = optional_endpoint("PAYMENTS_CP_ENDPOINT")
+if CREDENTIAL_PROVIDER_ENDPOINT and not PAYMENTS_CP_ENDPOINT:
+    PAYMENTS_CP_ENDPOINT = CREDENTIAL_PROVIDER_ENDPOINT
+if PAYMENTS_CP_ENDPOINT and not CREDENTIAL_PROVIDER_ENDPOINT:
+    CREDENTIAL_PROVIDER_ENDPOINT = PAYMENTS_CP_ENDPOINT
+
+
+def _cp_client_kwargs(endpoint: str | None) -> dict:
+    if endpoint:
+        return {"endpoint_url": endpoint}
+    return {}
 
 # Resource names
 NAME_PATTERN = re.compile(r'^[a-zA-Z][a-zA-Z0-9_]{0,47}$')
@@ -82,7 +103,7 @@ except Exception as e:
 cred_client_test = boto3.client(
     "bedrock-agentcore-control",
     region_name=AWS_REGION,
-    endpoint_url=CREDENTIAL_PROVIDER_ENDPOINT,
+    **_cp_client_kwargs(CREDENTIAL_PROVIDER_ENDPOINT),
 )
 if not hasattr(cred_client_test, "create_payment_credential_provider"):
     sys.exit(
@@ -157,12 +178,15 @@ cp_session = boto3.Session(
 
 cred_client = cp_session.client(
     "bedrock-agentcore-control",
-    endpoint_url=CREDENTIAL_PROVIDER_ENDPOINT,
+    region_name=AWS_REGION,
+    **_cp_client_kwargs(CREDENTIAL_PROVIDER_ENDPOINT),
 )
 payments_client = cp_session.client(
     "bedrock-agentcore-control",
-    endpoint_url=PAYMENTS_CP_ENDPOINT,
+    region_name=AWS_REGION,
+    **_cp_client_kwargs(PAYMENTS_CP_ENDPOINT),
 )
+print(f"  Control plane client endpoint: {cred_client.meta.endpoint_url}")
 # Verify assumed identity
 cp_sts = cp_session.client("sts", region_name=AWS_REGION)
 assumed_id = cp_sts.get_caller_identity()
@@ -170,19 +194,37 @@ print(f"  Assumed as: {assumed_id['Arn']}")
 print(f"  Now operating as ControlPlaneRole")
 
 
+def _payments_preview_help(account_id: str, region: str) -> str:
+    return (
+        "\n  AgentCore Payments returned UnknownOperationException — the API exists in your\n"
+        "  local botocore model, but this AWS account/region is not serving Payment APIs.\n\n"
+        "  Typical cause: this account is not allowlisted for the AgentCore Payments **private preview**.\n"
+        f"  • Account: {account_id}\n"
+        f"  • Region:  {region}\n\n"
+        "  Ask your AWS contact to confirm **AgentCore Payments** preview access for this account\n"
+        "  (see docs/getting-started.md). If you have multiple accounts, use the one that was allowlisted.\n"
+    )
+
+
 # ── Step 1: CreatePaymentCredentialProvider ─────────────────────
 print(f"\n[1/3] Creating PaymentCredentialProvider '{CRED_PROVIDER_NAME}' ...")
-cred_response = cred_client.create_payment_credential_provider(
-    name=CRED_PROVIDER_NAME,
-    credentialProviderVendor="CoinbaseCDP",
-    providerConfigurationInput={
-        "coinbaseCdpConfiguration": {
-            "apiKeyId": COINBASE_API_KEY_ID,
-            "apiKeySecret": COINBASE_API_KEY_SECRET,
-            "walletSecret": COINBASE_WALLET_SECRET,
-        }
-    },
-)
+try:
+    cred_response = cred_client.create_payment_credential_provider(
+        name=CRED_PROVIDER_NAME,
+        credentialProviderVendor="CoinbaseCDP",
+        providerConfigurationInput={
+            "coinbaseCdpConfiguration": {
+                "apiKeyId": COINBASE_API_KEY_ID,
+                "apiKeySecret": COINBASE_API_KEY_SECRET,
+                "walletSecret": COINBASE_WALLET_SECRET,
+            }
+        },
+    )
+except ClientError as e:
+    code = e.response.get("Error", {}).get("Code", "")
+    if code == "UnknownOperationException":
+        sys.exit(_payments_preview_help(ACCOUNT_ID, AWS_REGION) + f"  Raw error: {e}")
+    raise
 pp("CreatePaymentCredentialProvider", dict(cred_response))
 credential_provider_arn = cred_response["credentialProviderArn"]
 print(f"\n  credentialProviderArn: {credential_provider_arn}")
@@ -190,11 +232,17 @@ print(f"\n  credentialProviderArn: {credential_provider_arn}")
 
 # ── Step 2: CreatePaymentManager ───────────────────────────────
 print(f"\n[2/3] Creating PaymentManager '{MANAGER_NAME}' ...")
-mgr_response = payments_client.create_payment_manager(
-    name=MANAGER_NAME,
-    authorizerType="AWS_IAM",
-    roleArn=RESOURCE_RETRIEVAL_ROLE_ARN,
-)
+try:
+    mgr_response = payments_client.create_payment_manager(
+        name=MANAGER_NAME,
+        authorizerType="AWS_IAM",
+        roleArn=RESOURCE_RETRIEVAL_ROLE_ARN,
+    )
+except ClientError as e:
+    code = e.response.get("Error", {}).get("Code", "")
+    if code == "UnknownOperationException":
+        sys.exit(_payments_preview_help(ACCOUNT_ID, AWS_REGION) + f"  Raw error: {e}")
+    raise
 pp("CreatePaymentManager", dict(mgr_response))
 payment_manager_id = mgr_response["paymentManagerId"]
 print(f"\n  paymentManagerId: {payment_manager_id}")
@@ -202,14 +250,20 @@ print(f"\n  paymentManagerId: {payment_manager_id}")
 
 # ── Step 3: CreatePaymentConnector ─────────────────────────────
 print(f"\n[3/3] Creating PaymentConnector '{CONNECTOR_NAME}' ...")
-conn_response = payments_client.create_payment_connector(
-    paymentManagerId=payment_manager_id,
-    name=CONNECTOR_NAME,
-    type="CoinbaseCDP",
-    credentialProviderConfigurations=[
-        {"coinbaseCDP": {"credentialProviderArn": credential_provider_arn}}
-    ],
-)
+try:
+    conn_response = payments_client.create_payment_connector(
+        paymentManagerId=payment_manager_id,
+        name=CONNECTOR_NAME,
+        type="CoinbaseCDP",
+        credentialProviderConfigurations=[
+            {"coinbaseCDP": {"credentialProviderArn": credential_provider_arn}}
+        ],
+    )
+except ClientError as e:
+    code = e.response.get("Error", {}).get("Code", "")
+    if code == "UnknownOperationException":
+        sys.exit(_payments_preview_help(ACCOUNT_ID, AWS_REGION) + f"  Raw error: {e}")
+    raise
 pp("CreatePaymentConnector", dict(conn_response))
 
 # ── Summary ─────────────────────────────────────────────────────

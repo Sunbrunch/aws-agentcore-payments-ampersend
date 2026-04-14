@@ -55,12 +55,19 @@ sep
 echo ""
 
 # ── Trust policies ───────────────────────────────────────────────
-# Detect caller's IAM role to add to trust policy
+# Detect caller's IAM role to add to trust policy.
+# SSO permission-set roles often have a path (e.g. aws-reserved/sso.amazonaws.com/...);
+# arn:aws:iam::ACCOUNT:role/ROLE_NAME alone is INVALID — resolve via iam:GetRole.
 CALLER_ARN=$(echo "$CALLER_IDENTITY" | jq -r '.Arn')
 CALLER_ROLE_ARN=""
 if [[ "$CALLER_ARN" == *":assumed-role/"* ]]; then
     CALLER_ROLE_NAME=$(echo "$CALLER_ARN" | sed 's/.*:assumed-role\///' | cut -d/ -f1)
-    CALLER_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${CALLER_ROLE_NAME}"
+    if CANONICAL_ARN=$(aws iam get-role --role-name "$CALLER_ROLE_NAME" --query 'Role.Arn' --output text 2>/dev/null) \
+        && [[ -n "$CANONICAL_ARN" && "$CANONICAL_ARN" != "None" ]]; then
+        CALLER_ROLE_ARN="$CANONICAL_ARN"
+    else
+        warn "  Could not resolve caller IAM role ARN (iam:GetRole); trust policy will use account root only."
+    fi
 fi
 
 if [[ -n "$CALLER_ROLE_ARN" ]]; then
