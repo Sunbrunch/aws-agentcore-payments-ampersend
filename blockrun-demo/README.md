@@ -2,6 +2,25 @@
 
 End-to-end demo showing AWS AgentCore Payments as the buyer-side payment backend, Ampersend SDK as the seller-side x402 gateway, and BlockRun as the upstream LLM inference provider.
 
+## Alignment with AgentCore Payments (Private Preview)
+
+This demo matches the **reference architecture** in the AgentCore Payments Private Preview guide:
+
+| Guide concept | In this demo |
+|---------------|----------------|
+| **ProcessPaymentRole** — only `bedrock-agentcore:ProcessPayment` | `buyer.py` calls `sts.assume_role(ProcessPaymentRole)` then uses the **data plane** client `bedrock-agentcore` with `DP_ENDPOINT` (`https://bedrock-agentcore.<region>.amazonaws.com`). |
+| **ManagementRole** creates instruments & sessions; agent does **not** | `PAYMENT_INSTRUMENT_ID` and `PAYMENT_SESSION_ID` come from your environment — provision them with **ManagementRole** (`../scripts/e2e-test.sh` or your app), not from `buyer.py`. |
+| **ProcessPayment** with `CRYPTO_X402` and merchant payload as-is | `buyer.py` passes `accepts[0]` from the 402 response into `process_payment` (stripping v2 metadata only, same as Strands). |
+| **clientToken** on ProcessPayment | `buyer.py` sends `clientToken=str(uuid.uuid4())` on each call (idempotency). |
+| **Retry with proof** (v1 `X-PAYMENT`, v2 `PAYMENT-SIGNATURE`) | Same header construction as `strands-agent/agent.py`. |
+| **Spending guardrails** | Enforced by the **payment session** budget you created; the agent cannot raise limits. |
+
+**Seller (`seller.py`)** is *not* part of AgentCore Payments — it is a merchant-style x402 gateway (Ampersend + BlockRun) so you can show **buyer → merchant → upstream LLM** in one stack.
+
+For the **full Strands** experience (LLM chooses when to pay), use `../strands-agent/agent.py` and aim its HTTP tools at `SELLER_URL`.
+
+See also: `../docs/getting-started.md`, `../strands-agent/README.md`, and the Private Preview PDF.
+
 ## Architecture
 
 ```

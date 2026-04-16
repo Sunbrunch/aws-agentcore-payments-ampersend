@@ -2,22 +2,35 @@
 """
 AgentCore Payments Buyer — calls a paid LLM via x402.
 
-Demonstrates the full payment flow step by step:
+This script follows the **Agent Execution (ProcessPaymentRole)** pattern from the
+AgentCore Payments Private Preview guide:
+
+  • Assumes **ProcessPaymentRole** (can only call **ProcessPayment** — not create
+    sessions or instruments).
+  • Uses **paymentSessionId** + **paymentInstrumentId** + **paymentManagerArn**
+    supplied by the application backend (here: from `.env`, typically produced by
+    ManagementRole via CreatePaymentSession / instrument provisioning).
+  • On HTTP 402, passes the merchant **accepts[0]** payload to **process_payment**
+    as **cryptoX402** (v1 or v2), then retries the HTTP request with **X-PAYMENT**
+    or **PAYMENT-SIGNATURE** — same flow as `http_request` → `process_payment` →
+    `http_request_with_payment_header` in ../strands-agent/agent.py.
+
+Demonstrates step by step:
     [0] Assume AgentCore ProcessPaymentRole
     [1] POST to seller -> HTTP 402 (payment required)
-    [2] AgentCore ProcessPayment -> payment proof
+    [2] AgentCore ProcessPayment -> payment proof (status PROOF_GENERATED)
     [3] Retry with proof -> LLM response from BlockRun
 
 Usage:
     python buyer.py "What is the capital of France?"
     python buyer.py                                    # interactive mode
 
-The same flow works from the Strands agent in ../strands-agent/agent.py —
-just point it at the seller URL. This script shows the raw mechanics.
+For an LLM-driven agent with the same payment tools, use ../strands-agent/agent.py
+and point HTTP tools at the seller URL.
 
 Environment:
     MANAGER_ARN, PAYMENT_SESSION_ID, PAYMENT_INSTRUMENT_ID,
-    PROCESS_PAYMENT_ROLE_ARN — from AgentCore quickstart setup
+    PROCESS_PAYMENT_ROLE_ARN — from quickstart + e2e-test / backend
     SELLER_URL — http://localhost:8002/v1/chat/completions (default)
 """
 
@@ -33,7 +46,8 @@ import boto3
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+_ENV_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_ENV_DIR, ".env"))
 
 # ── AgentCore Configuration ──────────────────────────────────────
 AWS_REGION = os.environ.get("AWS_REGION", "us-west-2")
