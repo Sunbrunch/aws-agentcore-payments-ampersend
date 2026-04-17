@@ -42,9 +42,14 @@ NETWORK = os.environ.get("NETWORK", "base-sepolia")
 AMPERSEND_API_URL = os.environ.get("AMPERSEND_API_URL", "https://api.staging.ampersend.ai")
 PORT = int(os.environ.get("SELLER_PORT", "8002"))
 
+def _is_base_sepolia(env_network: str) -> bool:
+    n = (env_network or "").strip().lower()
+    return n in ("base-sepolia", "base_sepolia", "eip155:84532")
+
+
 BLOCKRUN_API_URL = (
     "https://testnet.blockrun.ai/api/v1"
-    if NETWORK == "base-sepolia"
+    if _is_base_sepolia(NETWORK)
     else "https://blockrun.ai/api/v1"
 )
 BLOCKRUN_MODEL = os.environ.get("BLOCKRUN_MODEL", "openai/gpt-oss-20b")
@@ -52,8 +57,21 @@ BLOCKRUN_MODEL = os.environ.get("BLOCKRUN_MODEL", "openai/gpt-oss-20b")
 USDC_ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # Base Sepolia USDC
 PRICE_MICRO_USDC = int(os.environ.get("PRICE_MICRO_USDC", "2000"))  # 0.002 USDC
 
-FACILITATOR_URL = os.environ.get("FACILITATOR_URL", "https://x402.org/facilitator")
+# Public x402.org facilitator: POST {FACILITATOR_URL}/settle (no /{network}/ in path).
+# Use www host — bare x402.org often 308-redirects; wrong paths return HTML/empty → JSON errors.
+FACILITATOR_URL = os.environ.get("FACILITATOR_URL", "https://www.x402.org/facilitator")
 SKIP_VERIFY = os.environ.get("SKIP_VERIFY", "false").lower() == "true"
+
+
+def _caip2_network(env_network: str) -> str:
+    """Map friendly names to CAIP-2 ids (x402.org + AgentCore use eip155:84532 for Base Sepolia)."""
+    n = (env_network or "").strip().lower()
+    if n in ("base-sepolia", "base_sepolia"):
+        return "eip155:84532"
+    return env_network
+
+
+CAIP2_NETWORK = _caip2_network(NETWORK)
 
 # ── Ampersend HTTP client (auto-pays BlockRun via x402) ──────────
 _blockrun_client: httpx.AsyncClient | None = None
@@ -82,12 +100,18 @@ def _payment_requirements(resource: str) -> dict:
         "accepts": [
             {
                 "scheme": "exact",
-                "network": NETWORK,
+                "network": CAIP2_NETWORK,
+                # Facilitators (x402.org Exact EVM) use `amount` for BigInt; some clients use maxAmountRequired only.
+                "amount": str(PRICE_MICRO_USDC),
                 "maxAmountRequired": str(PRICE_MICRO_USDC),
                 "asset": USDC_ASSET,
                 "payTo": SELLER_ADDRESS,
                 "maxTimeoutSeconds": 30,
-                "extra": {"name": "USDC", "version": "2"},
+                "extra": {
+                    "name": "USDC",
+                    "version": "2",
+                    "assetTransferMethod": "eip3009",
+                },
                 "resource": resource,
                 "description": "BlockRun LLM inference via Ampersend",
                 "mimeType": "application/json",
@@ -131,18 +155,26 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
         print("  [skip-verify] Accepted payment proof (verification disabled)")
         return {"success": True, "transaction": "skip-verify"}
 
+    settle_url = f"{FACILITATOR_URL.rstrip('/')}/settle"
+    payload = {
+        "x402Version": proof.get("x402Version", 2),
+        "paymentPayload": proof,
+        "paymentRequirements": requirements["accepts"][0],
+    }
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{FACILITATOR_URL}/{NETWORK}/settle",
-                json={
-                    "x402Version": proof.get("x402Version", 2),
-                    "paymentPayload": proof,
-                    "paymentRequirements": requirements["accepts"][0],
-                },
-                timeout=30,
-            )
-            result = resp.json()
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.post(settle_url, json=payload, timeout=30)
+            text = (resp.text or "").strip()
+            if not text:
+                err = f"empty response (HTTP {resp.status_code}) from {settle_url}"
+                print(f"  Facilitator error: {err}")
+                return {"success": False, "error": err}
+            try:
+                result = resp.json()
+            except json.JSONDecodeError:
+                err = f"non-JSON (HTTP {resp.status_code}): {text[:300]}"
+                print(f"  Facilitator error: {err}")
+                return {"success": False, "error": err}
             if result.get("success"):
                 tx = result.get("transaction", "")
                 print(f"  Settled on-chain: {tx[:20]}..." if tx else "  Settled")
@@ -167,7 +199,8 @@ async def chat_completions(request: Request) -> Response:
     requirements = _payment_requirements(resource)
     settlement = await _settle_payment(proof, requirements)
     if not settlement.get("success"):
-        print(f"  Payment rejected: {settlement.get('error')}")
+        err = settlement.get("error") or settlement.get("errorMessage") or settlement.get("invalidMessage")
+        print(f"  Payment rejected: {err or settlement}")
         return _return_402(resource)
 
     print(f"  Payment verified from {request.client.host}")
@@ -208,7 +241,7 @@ async def health(request: Request) -> JSONResponse:
         {
             "status": "ok",
             "seller": SELLER_ADDRESS,
-            "network": NETWORK,
+            "network": CAIP2_NETWORK,
             "model": BLOCKRUN_MODEL,
             "blockrun": BLOCKRUN_API_URL,
             "price_usdc": PRICE_MICRO_USDC / 1_000_000,
@@ -231,7 +264,7 @@ if __name__ == "__main__":
     print("  Ampersend x402 Seller -> BlockRun LLM")
     print("=" * 60)
     print(f"  Wallet  : {SELLER_ADDRESS}")
-    print(f"  Network : {NETWORK}")
+    print(f"  Network : {NETWORK} (x402: {CAIP2_NETWORK})")
     print(f"  Model   : {BLOCKRUN_MODEL}")
     print(f"  BlockRun: {BLOCKRUN_API_URL}")
     print(f"  Price   : ${PRICE_MICRO_USDC / 1_000_000:.4f} USDC")
