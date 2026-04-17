@@ -1,254 +1,294 @@
-# AgentCore Payments → Ampersend → BlockRun Demo
+# AgentCore Payments → Ampersend → BlockRun (POC)
 
-End-to-end demo showing AWS AgentCore Payments as the buyer-side payment backend, Ampersend SDK as the seller-side x402 gateway, and BlockRun as the upstream LLM inference provider.
+**Proof-of-concept** that stitches three payment-aware services into a single demo:
 
-## Alignment with AgentCore Payments (Private Preview)
+- **AWS AgentCore Payments** — signs x402 payments on behalf of an agent under a budget-capped session
+- **Ampersend SDK** — x402 merchant/proxy helper; signs outgoing x402 payments with a smart-account session key
+- **BlockRun** — x402-gated OpenAI-compatible LLM API
 
-This demo matches the **reference architecture** in the AgentCore Payments Private Preview guide:
+> Scope: a minimal reference for integrators. Everything runs on **Base Sepolia** testnet with USDC. Not production-ready.
 
-| Guide concept | In this demo |
-|---------------|----------------|
-| **ProcessPaymentRole** — only `bedrock-agentcore:ProcessPayment` | `buyer.py` calls `sts.assume_role(ProcessPaymentRole)` then uses the **data plane** client `bedrock-agentcore` with `DP_ENDPOINT` (`https://bedrock-agentcore.<region>.amazonaws.com`). |
-| **ManagementRole** creates instruments & sessions; agent does **not** | `PAYMENT_INSTRUMENT_ID` and `PAYMENT_SESSION_ID` come from your environment — provision them with **ManagementRole** (`../scripts/e2e-test.sh` or your app), not from `buyer.py`. |
-| **ProcessPayment** with `CRYPTO_X402` and merchant payload as-is | `buyer.py` passes `accepts[0]` from the 402 response into `process_payment` (stripping v2 metadata only, same as Strands). |
-| **clientToken** on ProcessPayment | `buyer.py` sends `clientToken=str(uuid.uuid4())` on each call (idempotency). |
-| **Retry with proof** (v1 `X-PAYMENT`, v2 `PAYMENT-SIGNATURE`) | Same header construction as `strands-agent/agent.py`. |
-| **Spending guardrails** | Enforced by the **payment session** budget you created; the agent cannot raise limits. |
+---
 
-**Seller (`seller.py`)** is *not* part of AgentCore Payments — it is a merchant-style x402 gateway (Ampersend + BlockRun) so you can show **buyer → merchant → upstream LLM** in one stack.
+## Quick Start
 
-For the **full Strands** experience (LLM chooses when to pay), use `../strands-agent/agent.py` and aim its HTTP tools at `SELLER_URL`.
+Assumes you've run `../quickstart/setup_roles.sh` + `setup_manager.sh` and have an Ampersend seller wallet.
 
-See also: `../docs/getting-started.md`, `../strands-agent/README.md`, and the Private Preview PDF.
+```bash
+cd blockrun-demo
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.sample .env       # fill in values (see "Configuration" below)
+
+# Terminal 1
+python seller.py          # starts x402 gate on http://localhost:8002
+
+# Terminal 2
+python buyer.py "What is the capital of France?"
+```
+
+Fund both wallets with Base Sepolia USDC ([Circle faucet](https://faucet.circle.com/)):
+
+- **Buyer wallet** — the `walletAddress` from your AgentCore payment instrument
+- **Seller wallet** — your Ampersend smart account
+
+Need the instrument + session? Run `../scripts/e2e-test.sh` (ManagementRole path) and copy `paymentInstrumentId` / `paymentSessionId` into `.env`.
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────┐
-│  Buyer  (buyer.py)                  │
-│                                     │
-│  AgentCore ProcessPayment API       │
-│  (SigV4 → ProcessPaymentRole)      │
-│                                     │
-│  1. POST /v1/chat/completions       │
-│  2. Gets HTTP 402 + x402 payload    │
-│  3. Calls ProcessPayment → proof    │
-│  4. Retries with proof header       │
-└──────────────┬──────────────────────┘
-               │  x402 payment proof
-               ▼
-┌─────────────────────────────────────┐
-│  Seller  (seller.py)                │
-│                                     │
-│  Ampersend SDK (x402 transport)     │
-│  Starlette HTTP server              │
-│                                     │
-│  • Gates /v1/chat/completions       │
-│  • Verifies payment via facilitator │
-│  • Proxies to BlockRun              │
-│    (ampersend httpx client          │
-│     auto-pays BlockRun via x402)    │
-└──────────────┬──────────────────────┘
-               │  x402 payment (auto)
-               ▼
-┌─────────────────────────────────────┐
-│  BlockRun  (testnet.blockrun.ai)    │
-│                                     │
-│  LLM inference API                  │
-│  OpenAI-compatible                  │
-│  x402-gated                         │
-│  Models: gpt-oss-20b, gpt-oss-120b │
-└─────────────────────────────────────┘
+┌──────────────────┐   1. POST /chat         ┌──────────────────┐   auto x402   ┌──────────────────┐
+│ Buyer (buyer.py) │────────────────────────>│ Seller (seller.py)│──────────────>│ BlockRun         │
+│                  │   2. HTTP 402 + reqs    │                  │               │ testnet.blockrun │
+│ AgentCore Runtime│<────────────────────────│ Starlette + x402 │<──────────────│ .ai/api/v1       │
+│  ProcessPayment  │   3. ProcessPayment     │  facilitator     │  LLM response │  (x402-gated)    │
+│  (ProcessPayment │      -> USDC sig proof  │  verify          │               │                  │
+│   Role + SigV4)  │                         │                  │               │                  │
+│                  │   4. POST + PAYMENT-SIG │ Ampersend SDK    │               │                  │
+│                  │─────(retry w/ proof)───>│ auto-pays BlockRun│               │                  │
+│                  │<──── LLM response ──────│                  │               │                  │
+└──────────────────┘                         └──────────────────┘               └──────────────────┘
 ```
 
-**Two x402 payment hops:**
-1. **Buyer → Seller** — AgentCore ProcessPayment signs a USDC transfer authorization. The seller verifies via the x402 facilitator.
-2. **Seller → BlockRun** — ampersend-sdk's httpx transport handles BlockRun's x402 gate transparently (auto-detects 402, signs, retries).
+**Two x402 hops, one request:**
 
-## Prerequisites
+1. **Buyer → Seller** — AgentCore signs a USDC `transferWithAuthorization` proof. Seller verifies via the x402 facilitator.
+2. **Seller → BlockRun** — Ampersend's httpx transport detects BlockRun's 402, signs, and retries automatically.
 
-1. **AgentCore Payments** set up via `../quickstart/`:
-   - IAM roles created (`setup_roles.sh`)
-   - Payment manager + connector provisioned (`setup_manager.sh`)
-   - Payment instrument + session created (via `../scripts/e2e-test.sh` or API)
-   - Instrument funded with testnet USDC ([Circle faucet](https://faucet.circle.com/))
-   - Botocore service models installed (`setup_model.sh`)
+**Roles (from AgentCore Payments Private Preview):**
 
-2. **Ampersend smart account** for the seller:
-   - Create at [ampersend.ai](https://ampersend.ai) or via the SDK
-   - Fund with Base Sepolia USDC ([Circle faucet](https://faucet.circle.com/))
-   - Get testnet ETH for gas ([Alchemy faucet](https://www.alchemy.com/faucets/base-sepolia))
+| Role | Who | What |
+|------|-----|------|
+| **ManagementRole** | app backend (`../scripts/e2e-test.sh`) | creates instrument + session, sets budget |
+| **ProcessPaymentRole** | `buyer.py` | can **only** call `ProcessPayment` within the session budget |
+| **Seller** | `seller.py` | off-AgentCore x402 merchant (Ampersend) |
 
-3. **Python 3.11+** with pip or uv
+---
 
-## Setup
+## Integration Snippets
 
-```bash
-cd blockrun-demo
+Copy-paste starting points for integrating each component into your own agent, API, or gateway.
 
-# Install dependencies
-pip install -r requirements.txt
-# or: uv pip install -r requirements.txt
+### 1. AgentCore `ProcessPayment` (buyer side)
 
-# Configure
-cp .env.sample .env
-# Fill in AgentCore values (from quickstart output)
-# Fill in Ampersend values (seller wallet + session key)
+The agent assumes `ProcessPaymentRole` and calls the **data plane** `bedrock-agentcore` client. It passes the merchant's `accepts[0]` payload through as `cryptoX402`. This is the only AgentCore call the agent is allowed to make.
+
+```python
+import boto3, uuid
+
+sts = boto3.Session(profile_name="kevin").client("sts")
+creds = sts.assume_role(
+    RoleArn=PROCESS_PAYMENT_ROLE_ARN,
+    RoleSessionName="agent-pay",
+)["Credentials"]
+
+dp = boto3.Session(
+    aws_access_key_id=creds["AccessKeyId"],
+    aws_secret_access_key=creds["SecretAccessKey"],
+    aws_session_token=creds["SessionToken"],
+    region_name="us-west-2",
+).client("bedrock-agentcore", endpoint_url=DP_ENDPOINT)
+
+resp = dp.process_payment(
+    userId=USER_ID,
+    paymentManagerArn=MANAGER_ARN,
+    paymentSessionId=PAYMENT_SESSION_ID,
+    paymentInstrumentId=PAYMENT_INSTRUMENT_ID,
+    paymentType="CRYPTO_X402",
+    paymentInput={"cryptoX402": {"version": "2", "payload": accepts_payload}},
+    clientToken=str(uuid.uuid4()),
+)
+assert resp["status"] == "PROOF_GENERATED"
+proof = resp["paymentOutput"]["cryptoX402"]  # {"version":"2","payload":{...}}
 ```
 
-## Demo
+See `buyer.py` `agentcore_process_payment()`.
 
-### Terminal 1 — Start the seller
+### 2. Build the x402 proof header (buyer side)
 
-```bash
-python seller.py
+After `ProcessPayment`, wrap the proof in the x402 header the merchant expects and retry the original request.
+
+```python
+import base64, json, requests
+
+if x402_version >= 2:
+    header_name = "PAYMENT-SIGNATURE"
+    value = {
+        "x402Version": 2,
+        "resource": accepts_payload["resource"],
+        "accepted": accepts_payload,
+        "payload":  proof["payload"],
+        "extension": accepts_payload["resource"],
+    }
+else:
+    header_name = "X-PAYMENT"
+    value = {
+        "x402Version": 1,
+        "scheme":  accepts_payload.get("scheme",  "exact"),
+        "network": accepts_payload.get("network", "base-sepolia"),
+        "payload": proof["payload"],
+    }
+
+encoded = base64.b64encode(json.dumps(value).encode()).decode()
+resp = requests.post(SELLER_URL, json=body, headers={header_name: encoded})
 ```
 
-Expected output:
-```
-============================================================
-  Ampersend x402 Seller -> BlockRun LLM
-============================================================
-  Wallet  : 0x...
-  Network : base-sepolia
-  Model   : openai/gpt-oss-20b
-  BlockRun: https://testnet.blockrun.ai/api/v1
-  Price   : $0.0020 USDC
-  Port    : 8002
+See `buyer.py` `build_payment_header()`.
 
-  Endpoint: http://localhost:8002/v1/chat/completions
-  Health : http://localhost:8002/health
-============================================================
-```
+### 3. x402 seller gate — `402 Payment Required` (seller side)
 
-### Terminal 2 — Run the buyer
+Return a base64 `PAYMENT-REQUIRED` header (v2) or JSON body (v1). `amount` is in the token's smallest unit (6-decimal USDC → `1000` = $0.001). `amount` **and** `maxAmountRequired` should both be set to satisfy older and newer clients.
 
-```bash
-# One-shot
-python buyer.py "What is the capital of France?"
+```python
+from starlette.responses import Response
+import base64, json
 
-# Interactive
-python buyer.py
-```
-
-Expected output:
-```
-============================================================
-  AgentCore Payments -> Ampersend x402 -> BlockRun LLM
-============================================================
-  Seller : http://localhost:8002/v1/chat/completions
-  Model  : openai/gpt-oss-20b
-  Prompt : What is the capital of France?
-============================================================
-
-[0] Assuming AgentCore ProcessPaymentRole...
-    Role: AgentCorePaymentsProcessPaymentRole
-
-[1] POST http://localhost:8002/v1/chat/completions
-    HTTP 402
-    Payment required: $0.0020 USDC on base-sepolia
-    Pay to: 0x312554...431E44
-
-[2] AgentCore ProcessPayment (x402 v2)...
-    Manager : my-payment-manager
-    Session : ps-abc123...
-    ProcessPayment -> PROOF_GENERATED
-    Payment proof generated
-
-[3] Retrying with PAYMENT-SIGNATURE header...
-    Attempt 1/6...
-    HTTP 200
-
-────────────────────────────────────────────────────────────
-  Model  : gpt-oss-20b
-  Tokens : 42
-────────────────────────────────────────────────────────────
-  The capital of France is Paris.
-────────────────────────────────────────────────────────────
-
-Done: AgentCore -> Ampersend -> BlockRun end-to-end
+def return_402(resource: str, pay_to: str):
+    reqs = {
+        "x402Version": 2,
+        "accepts": [{
+            "scheme":  "exact",
+            "network": "eip155:84532",                 # CAIP-2 for Base Sepolia
+            "amount":  "1000",                          # required by facilitator
+            "maxAmountRequired": "1000",
+            "asset":   "0x036CbD53842c5426634e7929541eC2318f3dCF7e",  # USDC
+            "payTo":   pay_to,
+            "maxTimeoutSeconds": 30,
+            "extra":   {"name": "USDC", "version": "2",
+                        "assetTransferMethod": "eip3009"},
+            "resource": resource,
+            "mimeType": "application/json",
+            "description": "Pay-per-request LLM",
+            "outputSchema": {},
+        }],
+    }
+    enc = base64.b64encode(json.dumps(reqs).encode()).decode()
+    return Response(
+        content=json.dumps(reqs),
+        status_code=402,
+        headers={"PAYMENT-REQUIRED": enc, "Content-Type": "application/json"},
+    )
 ```
 
-### Using the Strands Agent as buyer
+See `seller.py` `_payment_requirements()` / `_return_402()`.
 
-You can also point the existing Strands agent (`../strands-agent/agent.py`) at the seller:
+### 4. x402 facilitator — verify/settle (seller side)
 
-```bash
-cd ../strands-agent
-python agent.py "Make a POST request to http://localhost:8002/v1/chat/completions with body {\"model\": \"openai/gpt-oss-20b\", \"messages\": [{\"role\": \"user\", \"content\": \"What is 2+2?\"}]} and pay if needed"
+Post the decoded `paymentPayload` plus `paymentRequirements` to the facilitator `/settle` endpoint. **No `/{network}/` in the path** — network info travels inside the JSON.
+
+```python
+import httpx
+
+FACILITATOR_URL = "https://www.x402.org/facilitator"   # testnet, Base Sepolia
+
+async def settle(proof: dict, requirements: dict) -> dict:
+    async with httpx.AsyncClient(follow_redirects=True) as c:
+        resp = await c.post(
+            f"{FACILITATOR_URL}/settle",
+            json={
+                "x402Version": proof.get("x402Version", 2),
+                "paymentPayload": proof,
+                "paymentRequirements": requirements["accepts"][0],
+            },
+            timeout=30,
+        )
+        return resp.json()   # {"success": bool, "transaction": "0x…", …}
 ```
 
-The Strands agent will autonomously detect the 402, pay via AgentCore ProcessPayment, and retry — showing autonomous agent payment in action.
+See `seller.py` `_settle_payment()`.
+
+### 5. Ampersend SDK — seller pays its upstream via x402
+
+The seller only needs an Ampersend smart-account address + session key. Every HTTP call through this client automatically handles 402 → sign → retry.
+
+```python
+from ampersend_sdk import create_ampersend_http_client
+
+blockrun = create_ampersend_http_client(
+    smart_account_address=SELLER_ADDRESS,
+    session_key_private_key=SELLER_SESSION_KEY,
+    api_url="https://api.ampersend.ai",
+)
+
+resp = await blockrun.post(
+    "https://testnet.blockrun.ai/api/v1/chat/completions",
+    json={"model": "openai/gpt-oss-20b",
+          "messages": [{"role": "user", "content": "hi"}]},
+)
+```
+
+See `seller.py` `_get_blockrun_client()`.
+
+### 6. BlockRun — the paid upstream
+
+OpenAI-compatible HTTP API, gated with x402. You only interact with it through the Ampersend client above, but the request/response shape is the standard OpenAI format.
+
+```
+POST https://testnet.blockrun.ai/api/v1/chat/completions
+{
+  "model": "openai/gpt-oss-20b",
+  "messages": [{"role": "user", "content": "Hello"}]
+}
+```
+
+---
 
 ## Configuration
 
-### Environment Variables
+`.env` values (see `.env.sample`):
 
-| Variable | Used by | Description |
-|----------|---------|-------------|
-| `AWS_REGION` | buyer | AWS region (default: `us-west-2`) |
-| `DP_ENDPOINT` | buyer | AgentCore data plane endpoint |
-| `MANAGER_ARN` | buyer | Payment manager ARN |
-| `PROCESS_PAYMENT_ROLE_ARN` | buyer | IAM role for ProcessPayment |
-| `PAYMENT_SESSION_ID` | buyer | Pre-provisioned payment session |
-| `PAYMENT_INSTRUMENT_ID` | buyer | Pre-provisioned payment instrument |
-| `SELLER_SMART_ACCOUNT_ADDRESS` | seller | Ampersend smart account address |
-| `SELLER_SESSION_KEY` | seller | Ampersend session key for signing |
-| `NETWORK` | seller | `base-sepolia` (testnet) or `base` (mainnet) |
-| `BLOCKRUN_MODEL` | both | LiteLLM model string (default: `openai/gpt-oss-20b`) |
-| `SELLER_URL` | buyer | Seller endpoint URL |
-| `SELLER_PORT` | seller | HTTP port (default: `8002`) |
-| `PRICE_MICRO_USDC` | seller | Price per request in micro-USDC (default: `2000` = $0.002) |
-| `SKIP_VERIFY` | seller | Set `true` to skip facilitator verification |
+| Variable | Used by | Purpose |
+|----------|---------|---------|
+| `AWS_REGION` / `AWS_PROFILE` | buyer | SSO profile + region |
+| `DP_ENDPOINT` | buyer | `https://bedrock-agentcore.<region>.amazonaws.com` |
+| `MANAGER_ARN` | buyer | Payment manager (from `setup_manager.sh`) |
+| `PROCESS_PAYMENT_ROLE_ARN` | buyer | Role to assume (from `setup_roles.sh`) |
+| `PAYMENT_SESSION_ID` | buyer | Pre-provisioned session (from `e2e-test.sh`) |
+| `PAYMENT_INSTRUMENT_ID` | buyer | Pre-provisioned instrument/wallet |
+| `USER_ID` | buyer | Must match the instrument/session owner |
+| `SELLER_SMART_ACCOUNT_ADDRESS` | seller | Ampersend smart account (pay-to) |
+| `SELLER_SESSION_KEY` | seller | Ampersend session key (signs outgoing x402) |
+| `AMPERSEND_API_URL` | seller | `https://api.ampersend.ai` |
+| `NETWORK` | seller | `base-sepolia` or `eip155:84532` |
+| `PRICE_MICRO_USDC` | seller | `1000` = $0.001 per request |
+| `FACILITATOR_URL` | seller | Defaults to `https://www.x402.org/facilitator` |
+| `SKIP_VERIFY` | seller | `true` disables facilitator (local dev only) |
 
-### BlockRun Testnet
+---
 
-| Setting | Value |
-|---------|-------|
-| API | `https://testnet.blockrun.ai/api/v1` |
-| Network | Base Sepolia (Chain 84532) |
-| Models | `openai/gpt-oss-20b`, `openai/gpt-oss-120b` |
+## Troubleshooting
 
-### Funding
+| Symptom | Fix |
+|---------|-----|
+| `Expecting value: line 1 column 1 (char 0)` from facilitator | Wrong URL — must be `POST {FACILITATOR_URL}/settle` with no `/{network}/` path |
+| `Cannot convert undefined to a BigInt` | Add `amount` (not just `maxAmountRequired`) to `accepts[0]` |
+| `invalid_exact_evm_insufficient_balance` | Fund the **payer** address (from the error) with Base Sepolia USDC |
+| Buyer loops on “Settlement pending” | Facilitator is rejecting — check seller logs for the real `errorReason` |
+| 402 with no payment logs | `NETWORK` / CAIP-2 mismatch, or missing `PAYMENT-SIGNATURE` header |
 
-Both the AgentCore instrument and Ampersend seller wallet need testnet USDC:
-- **USDC**: [Circle Faucet](https://faucet.circle.com/) (select Base Sepolia)
-- **ETH** (gas): [Alchemy Faucet](https://www.alchemy.com/faucets/base-sepolia)
+---
 
-## How It Works
+## Files
 
-### Payment Flow Detail
+| File | Purpose |
+|------|---------|
+| `buyer.py` | Deterministic ProcessPayment → retry-with-proof flow |
+| `seller.py` | Starlette x402 gate + Ampersend → BlockRun proxy |
+| `.env.sample` | Copy to `.env` and fill in |
+| `requirements.txt` | Python deps (boto3, httpx, starlette, ampersend-sdk, …) |
 
-```
-Buyer                        Seller                  Facilitator         BlockRun
-  │                            │                         │                  │
-  │─── POST /chat ────────────>│                         │                  │
-  │<── 402 + PAYMENT-REQUIRED ─│                         │                  │
-  │                            │                         │                  │
-  │─── AgentCore ──> ProcessPayment API (AWS)            │                  │
-  │<── proof ──────────────────│                         │                  │
-  │                            │                         │                  │
-  │─── POST + PAYMENT-SIG ────>│                         │                  │
-  │                            │─── settle + proof ─────>│                  │
-  │                            │<── tx hash ─────────────│                  │
-  │                            │                         │                  │
-  │                            │─── POST /chat (x402 auto-pay) ──────────>│
-  │                            │<── LLM response ─────────────────────────│
-  │<── LLM response ──────────│                         │                  │
-```
+For an **LLM-driven** buyer, point `../strands-agent/agent.py` at `SELLER_URL`.
 
-### What each component does
+---
 
-- **AgentCore Payments** (buyer): Signs x402 USDC transfer authorizations within a budget-capped session. The agent can only spend what the app backend allocated — no escalation possible.
+## References
 
-- **Ampersend SDK** (seller): Provides the `create_ampersend_http_client` which wraps httpx with automatic x402 payment handling. When the seller proxies to BlockRun and gets a 402, the SDK signs and retries transparently.
-
-- **BlockRun** (upstream): x402-gated LLM inference API. OpenAI-compatible. Accepts USDC payments on Base (Sepolia for testnet).
-
-## Resources
-
-- [AgentCore Payments Guide](../docs/getting-started.md)
+- [AgentCore Payments — Private Preview Guide](../docs/getting-started.md)
+- [x402 spec — Exact EVM](https://github.com/x402-foundation/x402/blob/main/specs/schemes/exact/scheme_exact_evm.md)
+- [x402 networks / facilitators](https://docs.x402.org/core-concepts/network-and-token-support)
 - [Ampersend SDK](https://github.com/edgeandnode/ampersend-sdk)
-- [BlockRun](https://blockrun.ai) / [API Docs](https://github.com/BlockRunAI/awesome-blockrun)
-- [x402 Protocol](https://www.x402.org/)
-- [Ampersend × BlockRun Demo](https://github.com/edgeandnode/ampersend-blockrun-agentops-demo)
+- [BlockRun API](https://github.com/BlockRunAI/awesome-blockrun)
+- [Circle USDC faucet](https://faucet.circle.com/) · [Base Sepolia ETH faucet](https://www.alchemy.com/faucets/base-sepolia)
