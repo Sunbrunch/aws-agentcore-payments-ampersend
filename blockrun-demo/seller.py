@@ -268,6 +268,18 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
             if result.get("success"):
                 tx = result.get("transaction", "")
                 print(f"  Settled on-chain: {tx[:20]}..." if tx else "  Settled")
+            else:
+                er = result.get("errorReason") or result.get("error")
+                payer = result.get("payer", "")
+                print(f"  Facilitator settlement failed: {er}  payer={payer}")
+                if er == "invalid_exact_evm_transaction_failed" or (
+                    isinstance(er, str) and "insufficient" in er.lower()
+                ):
+                    print(
+                        "  → Most often: payer has no/spent Base Sepolia USDC, or the "
+                        "on-chain transfer reverted. Fund the payer with USDC: "
+                        "https://faucet.circle.com/ (network: Base Sepolia)."
+                    )
             return result
     except Exception as e:
         print(f"  Facilitator error: {e}")
@@ -393,6 +405,8 @@ app = Starlette(
     routes=[
         Route("/v1/chat/completions", chat_completions, methods=["GET", "POST"]),
         Route("/v1/models", list_models, methods=["GET"]),
+        # Back-compat: older buyer builds derived .../v1/chat/models by mistake.
+        Route("/v1/chat/models", list_models, methods=["GET"]),
         Route("/health", health),
     ],
 )

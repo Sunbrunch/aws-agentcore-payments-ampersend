@@ -330,6 +330,18 @@ def agentcore_process_payment(
     )
 
 
+def _payer_from_crypto_output(crypto_output: dict) -> str | None:
+    """USDC `from` address in the EIP-3009 authorization (fund this on Base Sepolia)."""
+    try:
+        pl = crypto_output.get("payload") or crypto_output
+        if isinstance(pl, dict):
+            auth = pl.get("authorization") or {}
+            return auth.get("from")
+    except Exception:
+        pass
+    return None
+
+
 def build_payment_header(
     x402_payload: dict, crypto_output: dict, x402_version: int
 ) -> tuple[str, str]:
@@ -479,6 +491,13 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
 
     crypto_output = pay_result["paymentOutput"]["cryptoX402"]
     print("    Payment proof generated")
+    payer_addr = _payer_from_crypto_output(crypto_output)
+    if payer_addr:
+        print(f"    Payer (USDC on Base Sepolia): {payer_addr}")
+        print(
+            "    If the seller later returns 402 again, fund this address "
+            f"(≥ ${amount_usdc:.4f} for this request) — https://faucet.circle.com/"
+        )
 
     # ── [4] Retry with proof → LLM response ──────────────────────
     header_name, header_value = build_payment_header(
@@ -486,7 +505,9 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
     )
     print(f"\n[4] Retrying with {header_name} header...")
 
-    max_attempts = 6
+    # A second 402 usually means the facilitator could not settle on-chain — not a
+    # race. Waiting longer rarely helps; fund the payer wallet with USDC instead.
+    max_attempts = 4
     result = None
     for attempt in range(1, max_attempts + 1):
         print(f"    Attempt {attempt}/{max_attempts}...")
@@ -495,9 +516,23 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
         )
         if result["status_code"] != 402:
             break
+        if attempt == 1:
+            print(
+                "\n    Still HTTP 402 with a payment proof — the seller rejected "
+                "settlement (see seller terminal for errorReason)."
+            )
+            ph = payer_addr or "(payer address in seller log)"
+            print(
+                f"    Typical fix: send Base Sepolia USDC to {ph} "
+                f"(need ≥ ${amount_usdc:.4f} for this tier)."
+            )
+            print(
+                "    errorReason=invalid_exact_evm_transaction_failed almost always "
+                "means insufficient USDC or a reverted transfer — not latency."
+            )
         if attempt < max_attempts:
-            wait = 2 * attempt
-            print(f"    Settlement pending, waiting {wait}s...")
+            wait = min(2 * attempt, 6)
+            print(f"    Retrying in {wait}s (short backoff for transient errors)...")
             time.sleep(wait)
 
     if result is None:
