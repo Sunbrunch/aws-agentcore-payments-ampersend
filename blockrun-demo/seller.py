@@ -302,13 +302,20 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
                 er = result.get("errorReason") or result.get("error")
                 payer = result.get("payer", "")
                 print(f"  Facilitator settlement failed: {er}  payer={payer}")
+                em = result.get("errorMessage") or result.get("message")
+                if em and str(em) != str(er):
+                    print(f"  errorMessage: {em}")
+                # Full JSON often includes fields the short errorReason omits (gas, revert data).
+                _rj = json.dumps(result, default=str)
+                print(f"  Facilitator JSON: {_rj[:900]}{'…' if len(_rj) > 900 else ''}")
                 if er == "invalid_exact_evm_transaction_failed" or (
                     isinstance(er, str) and "insufficient" in er.lower()
                 ):
                     print(
-                        "  → Common causes: (1) payer low on Base Sepolia USDC — "
-                        "https://faucet.circle.com/  (2) facilitator/settle mismatch — "
-                        "keep default accepts shape; try FACILITATOR_URL or SKIP_VERIFY=true (dev)."
+                        "  → If Basescan shows USDC on the payer: try FACILITATOR_URL="
+                        "https://facilitator.xpay.sh — or SKIP_VERIFY=true (local only). "
+                        "Coinbase CDP instruments sometimes settle more reliably via CDP's "
+                        "facilitator (API key): https://docs.cdp.coinbase.com/x402/docs/facilitator"
                     )
             return result
     except Exception as e:
