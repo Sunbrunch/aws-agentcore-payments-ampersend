@@ -69,6 +69,11 @@ PROCESS_PAYMENT_ROLE_ARN = os.environ["PROCESS_PAYMENT_ROLE_ARN"]
 MANAGEMENT_ROLE_ARN = os.environ.get("MANAGEMENT_ROLE_ARN", "")
 USER_ID = os.environ.get("USER_ID", "demo-user")
 
+# Brief pause after ProcessPayment before the seller calls facilitator /settle.
+# Public facilitators intermittently fail settle if hit immediately after signing
+# (coinbase/x402#1065). Set to 0 to disable.
+SETTLE_DELAY_SECONDS = float(os.environ.get("SETTLE_DELAY_SECONDS", "1.0"))
+
 # ── Seller Configuration ─────────────────────────────────────────
 SELLER_URL = os.environ.get(
     "SELLER_URL", "http://localhost:8002/v1/chat/completions"
@@ -504,6 +509,12 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
         x402_payload, crypto_output, x402_version
     )
     print(f"\n[4] Retrying with {header_name} header...")
+    if SETTLE_DELAY_SECONDS > 0:
+        print(
+            f"    Waiting {SETTLE_DELAY_SECONDS}s before first request "
+            "(SETTLE_DELAY_SECONDS — helps public facilitator /settle)…"
+        )
+        time.sleep(SETTLE_DELAY_SECONDS)
 
     # A 402 after ProcessPayment means the facilitator could not settle on-chain.
     # One retry is plenty; the seller logs `Direct USDC simulation: <reason>` which
@@ -522,8 +533,8 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
             print(
                 "\n    Still HTTP 402 — check the seller terminal for:\n"
                 "      'Direct USDC simulation: …' and 'Facilitator /verify: …'\n"
-                "    If simulation says the auth would succeed and /verify is isValid=true,\n"
-                "    /settle failed on the facilitator's relayer — try another FACILITATOR_URL.\n"
+                "    If both look good but /settle failed: increase SETTLE_DELAY_SECONDS (e.g. 2–3),\n"
+                "    or another FACILITATOR_URL — see coinbase/x402#1065 (verify/settle race).\n"
                 f"    Payer: {ph} — fund at https://faucet.circle.com/ if low."
             )
         if attempt < max_attempts:

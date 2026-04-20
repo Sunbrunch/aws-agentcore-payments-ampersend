@@ -28,6 +28,7 @@ Environment:
     MODEL_CATALOG                 Optional JSON override for the tier map
 """
 
+import asyncio
 import base64
 import json
 import os
@@ -66,6 +67,27 @@ USDC_ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # Base Sepolia USDC
 # Use www host — bare x402.org often 308-redirects; wrong paths return HTML/empty → JSON errors.
 FACILITATOR_URL = os.environ.get("FACILITATOR_URL", "https://www.x402.org/facilitator")
 SKIP_VERIFY = os.environ.get("SKIP_VERIFY", "false").lower() == "true"
+# Public facilitators sometimes return verify OK + eth_call OK but /settle fails if the
+# request hits too soon after signing (propagation / gas estimation race). See
+# coinbase/x402#1065 — retry /settle once after a short delay.
+_FAC_SETTLE_ATTEMPTS = max(1, int(os.environ.get("FACILITATOR_SETTLE_MAX_ATTEMPTS", "2")))
+_FAC_SETTLE_RETRY_DELAY = float(
+    os.environ.get("FACILITATOR_SETTLE_RETRY_DELAY_SECONDS", "1.5")
+)
+
+
+def _settle_error_retriable(er: str | None) -> bool:
+    if not er or not isinstance(er, str):
+        return False
+    e = er.lower()
+    if "insufficient" in e and "balance" in e:
+        return False
+    return (
+        "transaction_failed" in e
+        or "invalid_exact_evm" in e
+        or ("estimate" in e and "gas" in e)
+        or "unable to estimate" in e
+    )
 
 # ── Model Catalog (the "pay-per-intelligence" story) ─────────────
 # Buyers pick a tier based on task complexity. Each tier maps to a
@@ -399,6 +421,48 @@ async def _simulate_eip3009(proof: dict) -> str:
         return f"simulation skipped ({e})"
 
 
+async def _print_settle_failure_diagnostics(proof: dict, payload: dict, result: dict) -> None:
+    """After final /settle failure: eth_call + /verify + actionable hints."""
+    er = result.get("errorReason") or result.get("error")
+    payer = result.get("payer", "")
+    print(f"  Facilitator settlement failed: {er}  payer={payer}")
+    em = result.get("errorMessage") or result.get("message")
+    if em and str(em) != str(er):
+        print(f"  errorMessage: {em}")
+    _rj = json.dumps(result, default=str)
+    print(f"  Facilitator JSON: {_rj[:900]}{'…' if len(_rj) > 900 else ''}")
+
+    if not isinstance(er, str):
+        return
+    if not (
+        "transaction_failed" in er
+        or "invalid_exact_evm" in er
+        or "insufficient" in er.lower()
+    ):
+        return
+
+    diag = await _simulate_eip3009(proof)
+    print(f"  Direct USDC simulation: {diag}")
+    vsum = await _facilitator_verify_diagnostic(payload)
+    print(f"  Facilitator /verify: {vsum}")
+
+    sim_ok = "succeeded" in diag.lower() or "would accept" in diag.lower()
+    if sim_ok:
+        print(
+            "  → EIP-3009 is valid on-chain (eth_call) and /verify passed, but /settle "
+            "failed. This matches known facilitator timing / gas-estimation races "
+            "(coinbase/x402#1065, #961). Mitigations: wait SETTLE_DELAY_SECONDS on the "
+            "buyer after ProcessPayment; seller retries /settle (FACILITATOR_SETTLE_*); "
+            "or use Coinbase CDP facilitator with an API key. SKIP_VERIFY=true is local-only."
+        )
+    else:
+        print(
+            "  → If the simulation shows 'authorization is used or canceled': the "
+            "EIP-3009 nonce was already consumed — re-run scripts/e2e-test.sh. "
+            "Other causes: 0 USDC, validAfter in the future, or invalid signature."
+        )
+
+
 async def _settle_payment(proof: dict, requirements: dict) -> dict:
     """Verify x402 payment via facilitator.
 
@@ -422,67 +486,40 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
     }
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
-            resp = await client.post(settle_url, json=payload, timeout=30)
-            text = (resp.text or "").strip()
-            if not text:
-                err = f"empty response (HTTP {resp.status_code}) from {settle_url}"
-                print(f"  Facilitator error: {err}")
-                return {"success": False, "error": err}
-            try:
-                result = resp.json()
-            except json.JSONDecodeError:
-                err = f"non-JSON (HTTP {resp.status_code}): {text[:300]}"
-                print(f"  Facilitator error: {err}")
-                return {"success": False, "error": err}
-            if result.get("success"):
-                tx = result.get("transaction", "")
-                print(f"  Settled on-chain: {tx[:20]}..." if tx else "  Settled")
-            else:
-                er = result.get("errorReason") or result.get("error")
-                payer = result.get("payer", "")
-                print(f"  Facilitator settlement failed: {er}  payer={payer}")
-                em = result.get("errorMessage") or result.get("message")
-                if em and str(em) != str(er):
-                    print(f"  errorMessage: {em}")
-                # Full JSON often includes fields the short errorReason omits (gas, revert data).
-                _rj = json.dumps(result, default=str)
-                print(f"  Facilitator JSON: {_rj[:900]}{'…' if len(_rj) > 900 else ''}")
-
-                # The facilitator hides the actual EVM revert. Ask Base Sepolia directly
-                # via eth_call to USDC.transferWithAuthorization — this almost always
-                # tells us the real cause (insufficient balance, nonce reused, bad signature,
-                # validAfter window, etc.).
-                if isinstance(er, str) and (
-                    "transaction_failed" in er or "insufficient" in er.lower()
-                ):
-                    diag = await _simulate_eip3009(proof)
-                    print(f"  Direct USDC simulation: {diag}")
-                    vsum = await _facilitator_verify_diagnostic(payload)
-                    print(f"  Facilitator /verify: {vsum}")
-
-                    sim_ok = (
-                        "succeeded" in diag.lower()
-                        or "would accept" in diag.lower()
+            result: dict = {"success": False}
+            for attempt in range(1, _FAC_SETTLE_ATTEMPTS + 1):
+                if attempt > 1:
+                    print(
+                        f"  Retrying facilitator /settle ({attempt}/{_FAC_SETTLE_ATTEMPTS}) "
+                        f"after {_FAC_SETTLE_RETRY_DELAY}s…"
                     )
-                    if sim_ok:
-                        print(
-                            "  → EIP-3009 is valid on Base Sepolia (eth_call), but "
-                            "/settle failed. The problem is this facilitator's "
-                            "relayer/broadcast step (their gas wallet, RPC, or internal "
-                            "simulation), not your proof or USDC balance. Try "
-                            "FACILITATOR_URL=https://www.x402.org/facilitator, or "
-                            "Coinbase CDP's facilitator (API key). "
-                            "SKIP_VERIFY=true is local-only."
-                        )
-                    else:
-                        print(
-                            "  → If the simulation shows 'authorization is used or "
-                            "canceled': the EIP-3009 nonce was already consumed; "
-                            "re-run scripts/e2e-test.sh for a new session/instrument. "
-                            "Other causes: 0 USDC on Base Sepolia, validAfter in the "
-                            "future, or invalid signature. SKIP_VERIFY=true is local-only."
-                        )
-            return result
+                    await asyncio.sleep(_FAC_SETTLE_RETRY_DELAY)
+
+                resp = await client.post(settle_url, json=payload, timeout=60)
+                text = (resp.text or "").strip()
+                if not text:
+                    err = f"empty response (HTTP {resp.status_code}) from {settle_url}"
+                    print(f"  Facilitator error: {err}")
+                    return {"success": False, "error": err}
+                try:
+                    result = resp.json()
+                except json.JSONDecodeError:
+                    err = f"non-JSON (HTTP {resp.status_code}): {text[:300]}"
+                    print(f"  Facilitator error: {err}")
+                    return {"success": False, "error": err}
+
+                if result.get("success"):
+                    tx = result.get("transaction", "")
+                    print(f"  Settled on-chain: {tx[:20]}..." if tx else "  Settled")
+                    return result
+
+                er = result.get("errorReason") or result.get("error")
+                if attempt < _FAC_SETTLE_ATTEMPTS and _settle_error_retriable(er):
+                    print(f"  Facilitator /settle attempt {attempt} failed ({er}) — retrying")
+                    continue
+
+                await _print_settle_failure_diagnostics(proof, payload, result)
+                return result
     except Exception as e:
         print(f"  Facilitator error: {e}")
         return {"success": False, "error": str(e)}
