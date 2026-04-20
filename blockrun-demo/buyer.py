@@ -506,7 +506,7 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
     print(f"\n[4] Retrying with {header_name} header...")
 
     # A second 402 usually means the facilitator could not settle on-chain — not a
-    # race. Waiting longer rarely helps; fund the payer wallet with USDC instead.
+    # race. Retries rarely help unless the failure was transient; check seller logs.
     max_attempts = 4
     result = None
     for attempt in range(1, max_attempts + 1):
@@ -523,12 +523,12 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
             )
             ph = payer_addr or "(payer address in seller log)"
             print(
-                f"    Typical fix: send Base Sepolia USDC to {ph} "
-                f"(need ≥ ${amount_usdc:.4f} for this tier)."
+                f"    If Basescan shows low USDC: fund {ph} "
+                f"(≥ ${amount_usdc:.4f} for this tier) on Base Sepolia."
             )
             print(
-                "    errorReason=invalid_exact_evm_transaction_failed almost always "
-                "means insufficient USDC or a reverted transfer — not latency."
+                "    If USDC balance is fine: facilitator/settle issue — try another "
+                "FACILITATOR_URL on the seller or SKIP_VERIFY=true for local dev."
             )
         if attempt < max_attempts:
             wait = min(2 * attempt, 6)

@@ -154,20 +154,19 @@ def _caip2_network(env_network: str) -> str:
 
 CAIP2_NETWORK = _caip2_network(NETWORK)
 
-# Base Sepolia: some public facilitators fail settle with "invalid_exact_evm_transaction_failed"
-# or gas estimation errors even when the payer has USDC — see coinbase/x402#418, #1065.
-# Workarounds: (1) set FACILITATOR_URL=https://facilitator.xpay.sh  (2) optional gas hint in `extra`.
+# Optional tweaks for picky facilitators — **off by default** so `accepts[0]` matches
+# the proven x402.org + AgentCore shape (adding gasLimit or changing maxTimeoutSeconds
+# changes what ProcessPayment signs; that can break settlement if anything is mismatched).
+# See coinbase/x402#418 / #1065 if verify works but settle fails.
 _X402_EXTRA: dict = {
     "name": "USDC",
     "version": "2",
     "assetTransferMethod": "eip3009",
 }
-if CAIP2_NETWORK == "eip155:84532":
-    # Helps some facilitators estimate gas for EIP-3009 USDC transfers on testnet.
-    gl = os.environ.get("X402_USDC_GAS_LIMIT", "300000")
-    if gl:
-        _X402_EXTRA = {**_X402_EXTRA, "gasLimit": gl}
-_MAX_TIMEOUT = int(os.environ.get("MAX_TIMEOUT_SECONDS", "120" if CAIP2_NETWORK == "eip155:84532" else "30"))
+_gl = os.environ.get("X402_USDC_GAS_LIMIT", "").strip()
+if _gl:
+    _X402_EXTRA = {**_X402_EXTRA, "gasLimit": _gl}
+_MAX_TIMEOUT = int(os.environ.get("MAX_TIMEOUT_SECONDS", "30"))
 
 # ── Ampersend HTTP client (auto-pays BlockRun via x402) ──────────
 _blockrun_client: httpx.AsyncClient | None = None
@@ -211,7 +210,10 @@ def _payment_requirements(resource: str, tier: dict) -> dict:
                     f"model={tier['model']}"
                 ),
                 "mimeType": "application/json",
-                "outputSchema": {"tier": tier["id"], "model": tier["model"]},
+                # Keep empty — tier info is in description; non-empty outputSchema was
+                # stripped by AgentCore before signing but we used to POST full accepts
+                # to /settle, breaking facilitators (see _payment_requirements_for_settle).
+                "outputSchema": {},
             }
         ],
     }
@@ -244,6 +246,20 @@ def _extract_payment_proof(request: Request) -> dict | None:
         return None
 
 
+def _payment_requirements_for_settle(accepts0: dict, x402_version: int) -> dict:
+    """Align with buyer.py / AgentCore ProcessPayment: v2 strips metadata before signing.
+
+    If we POST the full `accepts[0]` (with description, outputSchema, …) to /settle
+    while the proof was produced from the stripped payload, facilitators can reject
+    with invalid_exact_evm_transaction_failed even when USDC balance is fine.
+    """
+    req = dict(accepts0)
+    if x402_version >= 2:
+        for key in ("description", "mimeType", "resource", "outputSchema"):
+            req.pop(key, None)
+    return req
+
+
 async def _settle_payment(proof: dict, requirements: dict) -> dict:
     """Verify x402 payment via facilitator.
 
@@ -256,11 +272,14 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
         print("  [skip-verify] Accepted payment proof (verification DISABLED)")
         return {"success": True, "transaction": "skip-verify"}
 
+    x402_ver = int(proof.get("x402Version", 2))
     settle_url = f"{FACILITATOR_URL.rstrip('/')}/settle"
     payload = {
-        "x402Version": proof.get("x402Version", 2),
+        "x402Version": x402_ver,
         "paymentPayload": proof,
-        "paymentRequirements": requirements["accepts"][0],
+        "paymentRequirements": _payment_requirements_for_settle(
+            requirements["accepts"][0], x402_ver
+        ),
     }
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -287,9 +306,9 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
                     isinstance(er, str) and "insufficient" in er.lower()
                 ):
                     print(
-                        "  → Most often: payer has no/spent Base Sepolia USDC, or the "
-                        "on-chain transfer reverted. Fund the payer with USDC: "
-                        "https://faucet.circle.com/ (network: Base Sepolia)."
+                        "  → Common causes: (1) payer low on Base Sepolia USDC — "
+                        "https://faucet.circle.com/  (2) facilitator/settle mismatch — "
+                        "keep default accepts shape; try FACILITATOR_URL or SKIP_VERIFY=true (dev)."
                     )
             return result
     except Exception as e:

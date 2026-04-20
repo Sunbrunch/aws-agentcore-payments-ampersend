@@ -290,7 +290,7 @@ If `MANAGEMENT_ROLE_ARN` is not set, the buyer prints a friendly hint and skips 
 | `MODEL_CATALOG` *(v2, optional)* | seller | JSON array — overrides the default fast/balanced/premium tiers |
 | `BLOCKRUN_MODEL`, `PRICE_MICRO_USDC` *(legacy)* | seller | Still honored — overrides the **fast** tier only |
 | `FACILITATOR_URL` | seller | `https://www.x402.org/facilitator` — if settle fails with USDC on-chain, try `https://facilitator.xpay.sh` |
-| `X402_USDC_GAS_LIMIT`, `MAX_TIMEOUT_SECONDS` | seller | *(Base Sepolia defaults)* gas hint + longer payment window for EIP-3009 settle |
+| `X402_USDC_GAS_LIMIT`, `MAX_TIMEOUT_SECONDS` | seller | *(optional)* only if a facilitator docs ask for them — changing defaults can change what AgentCore signs |
 | `SKIP_VERIFY` | seller | Set `true` for local dev only (loud banner) |
 
 ---
@@ -302,7 +302,7 @@ If `MANAGEMENT_ROLE_ARN` is not set, the buyer prints a friendly hint and skips 
 | `Expecting value: line 1 column 1 (char 0)` from facilitator | Use `POST {FACILITATOR_URL}/settle` — **no** `/{network}/` in the path |
 | `Cannot convert undefined to a BigInt` | Include both `amount` and `maxAmountRequired` in `accepts[0]` |
 | `invalid_exact_evm_insufficient_balance` | Fund the `payer` address (shown in the error) with Base Sepolia USDC |
-| `invalid_exact_evm_transaction_failed` **but** [Basescan](https://sepolia.basescan.org/) shows plenty of USDC on that payer | Known facilitator / gas-estimation quirks on Base Sepolia — set `FACILITATOR_URL=https://facilitator.xpay.sh`, restart seller, run buyer again (new 402 + new `ProcessPayment` proof). Seller also adds a `gasLimit` hint on `eip155:84532` by default. |
+| `invalid_exact_evm_transaction_failed` **but** [Basescan](https://sepolia.basescan.org/) shows plenty of USDC on that payer | Try alternate `FACILITATOR_URL` (e.g. `https://facilitator.xpay.sh`), or optional `X402_USDC_GAS_LIMIT` / `MAX_TIMEOUT_SECONDS` **only if** your facilitator docs require it. Avoid changing `accepts[0]` shape vs a known-good flow — it changes the signed payload. |
 | Buyer loops on *“Settlement pending”* | Facilitator is rejecting — check seller logs for the real `errorReason` |
 | `AccessDenied` on `ProcessPayment` | You didn’t assume `ProcessPaymentRole` first |
 | `[after] (skipped — set MANAGEMENT_ROLE_ARN …)` | Add `MANAGEMENT_ROLE_ARN` to `.env` to see the budget readout |
