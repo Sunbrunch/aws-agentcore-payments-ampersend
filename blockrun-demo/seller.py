@@ -375,13 +375,65 @@ async def chat_completions(request: Request) -> Response:
     print(f"  Proxying to BlockRun ({tier['model']})...")
 
     client = _get_blockrun_client()
+    blockrun_url = f"{BLOCKRUN_API_URL}/chat/completions"
+    blockrun_body = dict(body) if isinstance(body, dict) else body
+
+    print()
+    print("  ┌─── BlockRun Debug ─────────────────────────────────────")
+    print(f"  │ URL      : {blockrun_url}")
+    print(f"  │ Model    : {tier['model']}")
+    print(f"  │ Timeout  : {client.timeout}")
+    print(f"  │ Seller   : {SELLER_ADDRESS}")
+    print(f"  │ Ampersend: {AMPERSEND_API_URL}")
+    if isinstance(blockrun_body, dict):
+        msgs = blockrun_body.get("messages", [])
+        print(f"  │ Messages : {len(msgs)}")
+        for i, m in enumerate(msgs):
+            role = m.get("role", "?")
+            content = str(m.get("content", ""))
+            print(f"  │   [{i}] {role}: {content[:80]}{'…' if len(content)>80 else ''}")
+    print("  └────────────────────────────────────────────────────────")
+    print()
+
+    import time as _time
+    t0 = _time.monotonic()
+
     try:
         resp = await client.post(
-            f"{BLOCKRUN_API_URL}/chat/completions",
-            json=body,
+            blockrun_url,
+            json=blockrun_body,
             headers={"Content-Type": "application/json"},
         )
-        print(f"  BlockRun -> {resp.status_code}")
+        elapsed = _time.monotonic() - t0
+
+        print()
+        print("  ┌─── BlockRun Response ──────────────────────────────────")
+        print(f"  │ Status   : {resp.status_code}")
+        print(f"  │ Elapsed  : {elapsed:.2f}s")
+        print(f"  │ Headers  :")
+        for k, v in resp.headers.items():
+            print(f"  │   {k}: {v}")
+        resp_text = resp.text or ""
+        print(f"  │ Body len : {len(resp_text)} chars")
+        if resp.status_code >= 400:
+            print(f"  │ Body     :")
+            for line in resp_text[:2000].splitlines():
+                print(f"  │   {line}")
+        else:
+            try:
+                rj = resp.json()
+                choices = rj.get("choices", [])
+                if choices:
+                    msg = choices[0].get("message", {}).get("content", "")
+                    print(f"  │ Answer   : {msg[:200]}{'…' if len(msg)>200 else ''}")
+                usage = rj.get("usage")
+                if usage:
+                    print(f"  │ Usage    : {usage}")
+            except Exception:
+                print(f"  │ Body     : {resp_text[:500]}")
+        print("  └────────────────────────────────────────────────────────")
+        print()
+
         return Response(
             content=resp.content,
             status_code=resp.status_code,
@@ -393,8 +445,18 @@ async def chat_completions(request: Request) -> Response:
         )
     except Exception as e:
         import traceback
-        print(f"  BlockRun error: {type(e).__name__}: {e}")
-        traceback.print_exc()
+        elapsed = _time.monotonic() - t0
+
+        print()
+        print("  ┌─── BlockRun ERROR ─────────────────────────────────────")
+        print(f"  │ Exception: {type(e).__name__}: {e}")
+        print(f"  │ Elapsed  : {elapsed:.2f}s")
+        print(f"  │ Traceback:")
+        for line in traceback.format_exc().splitlines():
+            print(f"  │   {line}")
+        print("  └────────────────────────────────────────────────────────")
+        print()
+
         if not MOCK_ON_UPSTREAM_FAILURE:
             return JSONResponse({"error": f"Upstream error: {e}"}, status_code=502)
         print("  [mock] Returning synthetic response (MOCK_ON_UPSTREAM_FAILURE=true)")
