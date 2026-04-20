@@ -260,6 +260,120 @@ def _payment_requirements_for_settle(accepts0: dict, x402_version: int) -> dict:
     return req
 
 
+# ── Direct EIP-3009 simulation (diagnostic) ──────────────────────
+# When a facilitator returns opaque `transaction_failed` / `invalid_exact_evm_transaction_failed`,
+# we can independently simulate the USDC.transferWithAuthorization call against Base Sepolia
+# to reveal the actual revert reason (e.g. "FiatTokenV2: authorization is used or canceled",
+# "authorization is not yet valid", "invalid signature", etc.). This is the single most useful
+# thing when the facilitator is behaving as a black box.
+BASE_SEPOLIA_RPC_URL = os.environ.get("BASE_SEPOLIA_RPC_URL", "https://sepolia.base.org")
+# transferWithAuthorization(address,address,uint256,uint256,uint256,bytes32,uint8,bytes32,bytes32)
+_TWA_SELECTOR = "0xe3ee160e"
+
+
+def _hex_to_bytes(value: str, length: int | None = None) -> bytes:
+    if value is None:
+        raise ValueError("missing value")
+    s = value[2:] if isinstance(value, str) and value.startswith("0x") else str(value)
+    b = bytes.fromhex(s)
+    if length is not None and len(b) != length:
+        raise ValueError(f"expected {length} bytes, got {len(b)}")
+    return b
+
+
+def _split_signature(sig_hex: str) -> tuple[int, bytes, bytes]:
+    """Split a 65-byte compact EIP-2098/EIP-712 signature into (v, r, s)."""
+    raw = _hex_to_bytes(sig_hex, 65)
+    r, s, v = raw[:32], raw[32:64], raw[64]
+    if v < 27:
+        v += 27
+    return v, r, s
+
+
+def _encode_twa_calldata(auth: dict, signature: str) -> str:
+    """ABI-encode USDC.transferWithAuthorization using the proof's EIP-3009 auth + signature."""
+    try:
+        from eth_abi import encode as abi_encode
+    except ImportError as e:
+        raise RuntimeError(
+            "eth_abi not installed — cannot simulate EIP-3009 directly."
+        ) from e
+    value = int(auth["value"])
+    valid_after = int(auth["validAfter"])
+    valid_before = int(auth["validBefore"])
+    nonce = _hex_to_bytes(auth["nonce"], 32)
+    v, r, s = _split_signature(signature)
+    encoded = abi_encode(
+        [
+            "address", "address", "uint256", "uint256", "uint256",
+            "bytes32", "uint8", "bytes32", "bytes32",
+        ],
+        [
+            auth["from"], auth["to"], value, valid_after, valid_before,
+            nonce, v, r, s,
+        ],
+    )
+    return _TWA_SELECTOR + encoded.hex()
+
+
+def _decode_revert(data_hex: str) -> str:
+    """Decode a Solidity Error(string) revert blob into a readable reason."""
+    if not data_hex or not data_hex.startswith("0x") or len(data_hex) < 10:
+        return data_hex or "(no revert data)"
+    selector = data_hex[:10]
+    # Error(string) selector = 0x08c379a0; Panic(uint256) = 0x4e487b71
+    try:
+        from eth_abi import decode as abi_decode
+    except ImportError:
+        return data_hex
+    body = bytes.fromhex(data_hex[10:]) if len(data_hex) > 10 else b""
+    try:
+        if selector == "0x08c379a0":
+            (reason,) = abi_decode(["string"], body)
+            return reason
+        if selector == "0x4e487b71":
+            (code,) = abi_decode(["uint256"], body)
+            return f"Panic(0x{code:x})"
+    except Exception:
+        pass
+    return data_hex
+
+
+async def _simulate_eip3009(proof: dict) -> str:
+    """Return a one-line diagnosis from a direct eth_call to USDC.transferWithAuthorization.
+
+    This bypasses the facilitator entirely and asks Base Sepolia itself why the
+    transfer would revert. Returns a human-readable string for logging.
+    """
+    try:
+        payload = proof.get("payload") or proof
+        auth = (payload or {}).get("authorization") or {}
+        signature = (payload or {}).get("signature") or ""
+        if not auth or not signature:
+            return "proof missing authorization/signature — cannot simulate"
+
+        data = _encode_twa_calldata(auth, signature)
+        call = {"to": USDC_ASSET, "data": data}
+        body = {
+            "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+            "params": [call, "latest"],
+        }
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(BASE_SEPOLIA_RPC_URL, json=body, timeout=15)
+            js = resp.json()
+
+        if "result" in js:
+            return "direct eth_call succeeded — USDC would accept this authorization"
+        err = js.get("error") or {}
+        revert_data = err.get("data") or ""
+        if isinstance(revert_data, dict):
+            revert_data = revert_data.get("data", "") or revert_data.get("originalError", {}).get("data", "")
+        reason = _decode_revert(revert_data) if revert_data else err.get("message", "unknown error")
+        return f"RPC revert: {reason}  (raw: {err.get('message', '')})"
+    except Exception as e:
+        return f"simulation skipped ({e})"
+
+
 async def _settle_payment(proof: dict, requirements: dict) -> dict:
     """Verify x402 payment via facilitator.
 
@@ -308,14 +422,24 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
                 # Full JSON often includes fields the short errorReason omits (gas, revert data).
                 _rj = json.dumps(result, default=str)
                 print(f"  Facilitator JSON: {_rj[:900]}{'…' if len(_rj) > 900 else ''}")
-                if er == "invalid_exact_evm_transaction_failed" or (
-                    isinstance(er, str) and "insufficient" in er.lower()
+
+                # The facilitator hides the actual EVM revert. Ask Base Sepolia directly
+                # via eth_call to USDC.transferWithAuthorization — this almost always
+                # tells us the real cause (insufficient balance, nonce reused, bad signature,
+                # validAfter window, etc.).
+                if isinstance(er, str) and (
+                    "transaction_failed" in er or "insufficient" in er.lower()
                 ):
+                    diag = await _simulate_eip3009(proof)
+                    print(f"  Direct USDC simulation: {diag}")
                     print(
-                        "  → If Basescan shows USDC on the payer: try FACILITATOR_URL="
-                        "https://facilitator.xpay.sh — or SKIP_VERIFY=true (local only). "
-                        "Coinbase CDP instruments sometimes settle more reliably via CDP's "
-                        "facilitator (API key): https://docs.cdp.coinbase.com/x402/docs/facilitator"
+                        "  → If the revert says 'authorization is used or canceled': "
+                        "the EIP-3009 nonce has already been settled; re-create the "
+                        "payment session/instrument (bash scripts/e2e-test.sh) and try "
+                        "again. Other common causes: payer has 0 USDC on Base Sepolia, "
+                        "validAfter is in the future, or the facilitator's signer ran "
+                        "out of gas. SKIP_VERIFY=true bypasses on-chain settlement for "
+                        "local demos."
                     )
             return result
     except Exception as e:

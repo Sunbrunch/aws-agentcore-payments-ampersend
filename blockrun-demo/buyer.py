@@ -505,9 +505,10 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
     )
     print(f"\n[4] Retrying with {header_name} header...")
 
-    # A second 402 usually means the facilitator could not settle on-chain — not a
-    # race. Retries rarely help unless the failure was transient; check seller logs.
-    max_attempts = 4
+    # A 402 after ProcessPayment means the facilitator could not settle on-chain.
+    # One retry is plenty; the seller logs `Direct USDC simulation: <reason>` which
+    # tells us the real EVM revert (expired, nonce reused, insufficient balance, …).
+    max_attempts = 2
     result = None
     for attempt in range(1, max_attempts + 1):
         print(f"    Attempt {attempt}/{max_attempts}...")
@@ -517,23 +518,15 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
         if result["status_code"] != 402:
             break
         if attempt == 1:
+            ph = payer_addr or "(see seller log)"
             print(
-                "\n    Still HTTP 402 with a payment proof — the seller rejected "
-                "settlement (see seller terminal for errorReason)."
-            )
-            ph = payer_addr or "(payer address in seller log)"
-            print(
-                f"    If Basescan shows low USDC: fund {ph} "
-                f"(≥ ${amount_usdc:.4f} for this tier) on Base Sepolia."
-            )
-            print(
-                "    If USDC balance is fine: facilitator/settle issue — try another "
-                "FACILITATOR_URL on the seller or SKIP_VERIFY=true for local dev."
+                "\n    Still HTTP 402 — check the seller terminal for the line:\n"
+                "      'Direct USDC simulation: <reason>'\n"
+                "    That is the real reason the EIP-3009 transfer reverts on Base Sepolia.\n"
+                f"    Payer: {ph} — fund at https://faucet.circle.com/ if low."
             )
         if attempt < max_attempts:
-            wait = min(2 * attempt, 6)
-            print(f"    Retrying in {wait}s (short backoff for transient errors)...")
-            time.sleep(wait)
+            time.sleep(2)
 
     if result is None:
         print("    No response received")
