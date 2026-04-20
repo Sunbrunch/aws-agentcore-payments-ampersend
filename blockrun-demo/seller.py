@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """
-Ampersend x402 Seller — Pay-per-request LLM via BlockRun.
+Ampersend x402 Seller — Pay-per-intelligence LLM router via BlockRun.
 
 HTTP server that gates access to BlockRun's LLM API with x402 payments.
-Incoming requests must include an x402 payment proof. Verified requests
-are proxied to BlockRun using ampersend-sdk's X402Transport, which handles
-the seller's outgoing payment to BlockRun automatically.
+Incoming requests must include an x402 payment proof. The seller exposes
+a *catalog* of models at different price tiers — the buyer picks the tier
+that matches the complexity of the task (fast/balanced/premium).
+
+Verified requests are proxied to BlockRun using ampersend-sdk's
+X402Transport, which handles the seller's outgoing payment to BlockRun
+automatically.
 
 Architecture:
-    Buyer (AgentCore) → POST /v1/chat/completions (+ x402 proof)
-        → Seller verifies payment
-        → ampersend httpx client auto-pays BlockRun via x402
-        → BlockRun LLM response returned to buyer
+    Buyer (AgentCore) → GET  /v1/models                 (catalog, free)
+                      → POST /v1/chat/completions       (tiered price)
+                          ↳ 402 with payment requirements for that tier
+                          ↳ Seller verifies on-chain via facilitator
+                          ↳ ampersend httpx client pays BlockRun via x402
+                          ↳ BlockRun LLM response returned to buyer
 
 Start:
     python seller.py
@@ -19,6 +25,7 @@ Start:
 Environment:
     SELLER_SMART_ACCOUNT_ADDRESS  Seller's Ampersend smart account
     SELLER_SESSION_KEY            Seller's session key for signing
+    MODEL_CATALOG                 Optional JSON override for the tier map
 """
 
 import base64
@@ -52,15 +59,89 @@ BLOCKRUN_API_URL = (
     if _is_base_sepolia(NETWORK)
     else "https://blockrun.ai/api/v1"
 )
-BLOCKRUN_MODEL = os.environ.get("BLOCKRUN_MODEL", "openai/gpt-oss-20b")
 
 USDC_ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # Base Sepolia USDC
-PRICE_MICRO_USDC = int(os.environ.get("PRICE_MICRO_USDC", "2000"))  # 0.002 USDC
 
 # Public x402.org facilitator: POST {FACILITATOR_URL}/settle (no /{network}/ in path).
 # Use www host — bare x402.org often 308-redirects; wrong paths return HTML/empty → JSON errors.
 FACILITATOR_URL = os.environ.get("FACILITATOR_URL", "https://www.x402.org/facilitator")
 SKIP_VERIFY = os.environ.get("SKIP_VERIFY", "false").lower() == "true"
+
+# ── Model Catalog (the "pay-per-intelligence" story) ─────────────
+# Buyers pick a tier based on task complexity. Each tier maps to a
+# different BlockRun model at a different price point. This is the
+# "dynamically route to optimal AI model" narrative: the agent pays
+# more only when the task demands it.
+#
+# Override by setting MODEL_CATALOG to a JSON array of
+# {id, model, price_micro_usdc, description} entries.
+
+DEFAULT_CATALOG = [
+    {
+        "id": "fast",
+        "model": "openai/gpt-oss-20b",
+        "price_micro_usdc": 1000,   # $0.001
+        "description": "Fast, cheap. Good for short answers, quick summaries, classification.",
+    },
+    {
+        "id": "balanced",
+        "model": "openai/gpt-oss-120b",
+        "price_micro_usdc": 3000,   # $0.003
+        "description": "Balanced quality. Good for multi-paragraph analysis, governance summaries.",
+    },
+    {
+        "id": "premium",
+        "model": "deepseek/deepseek-v3",
+        "price_micro_usdc": 8000,   # $0.008
+        "description": "Premium reasoning. Good for smart-contract audits, deep technical review.",
+    },
+]
+
+
+def _load_catalog() -> list[dict]:
+    override = os.environ.get("MODEL_CATALOG")
+    if not override:
+        # Backward-compat: allow the old single-model envs to override the fast tier.
+        legacy_model = os.environ.get("BLOCKRUN_MODEL")
+        legacy_price = os.environ.get("PRICE_MICRO_USDC")
+        catalog = [dict(t) for t in DEFAULT_CATALOG]
+        if legacy_model:
+            catalog[0]["model"] = legacy_model
+        if legacy_price:
+            try:
+                catalog[0]["price_micro_usdc"] = int(legacy_price)
+            except ValueError:
+                pass
+        return catalog
+    try:
+        parsed = json.loads(override)
+        if not isinstance(parsed, list) or not parsed:
+            raise ValueError("MODEL_CATALOG must be a non-empty JSON array")
+        for entry in parsed:
+            if not {"id", "model", "price_micro_usdc"} <= entry.keys():
+                raise ValueError("Each MODEL_CATALOG entry needs id, model, price_micro_usdc")
+            entry["price_micro_usdc"] = int(entry["price_micro_usdc"])
+            entry.setdefault("description", "")
+        return parsed
+    except (ValueError, json.JSONDecodeError) as e:
+        raise SystemExit(f"Invalid MODEL_CATALOG: {e}")
+
+
+CATALOG = _load_catalog()
+CATALOG_BY_MODEL: dict[str, dict] = {t["model"]: t for t in CATALOG}
+CATALOG_BY_ID: dict[str, dict] = {t["id"]: t for t in CATALOG}
+DEFAULT_TIER = CATALOG[0]  # first entry is the default/fallback
+
+
+def _resolve_tier(requested: str | None) -> dict:
+    """Resolve the requested model (or tier id) to a catalog entry."""
+    if not requested:
+        return DEFAULT_TIER
+    return (
+        CATALOG_BY_MODEL.get(requested)
+        or CATALOG_BY_ID.get(requested)
+        or DEFAULT_TIER
+    )
 
 
 def _caip2_network(env_network: str) -> str:
@@ -93,8 +174,9 @@ def _get_blockrun_client() -> httpx.AsyncClient:
 # ── x402 Payment Requirements ───────────────────────────────────
 
 
-def _payment_requirements(resource: str) -> dict:
-    """Build x402 v2 payment requirements for the given resource."""
+def _payment_requirements(resource: str, tier: dict) -> dict:
+    """Build x402 v2 payment requirements for the given resource and tier."""
+    price = str(tier["price_micro_usdc"])
     return {
         "x402Version": 2,
         "accepts": [
@@ -102,8 +184,8 @@ def _payment_requirements(resource: str) -> dict:
                 "scheme": "exact",
                 "network": CAIP2_NETWORK,
                 # Facilitators (x402.org Exact EVM) use `amount` for BigInt; some clients use maxAmountRequired only.
-                "amount": str(PRICE_MICRO_USDC),
-                "maxAmountRequired": str(PRICE_MICRO_USDC),
+                "amount": price,
+                "maxAmountRequired": price,
                 "asset": USDC_ASSET,
                 "payTo": SELLER_ADDRESS,
                 "maxTimeoutSeconds": 30,
@@ -113,22 +195,30 @@ def _payment_requirements(resource: str) -> dict:
                     "assetTransferMethod": "eip3009",
                 },
                 "resource": resource,
-                "description": "BlockRun LLM inference via Ampersend",
+                "description": (
+                    f"BlockRun LLM inference via Ampersend — tier={tier['id']} "
+                    f"model={tier['model']}"
+                ),
                 "mimeType": "application/json",
-                "outputSchema": {},
+                "outputSchema": {"tier": tier["id"], "model": tier["model"]},
             }
         ],
     }
 
 
-def _return_402(resource: str) -> Response:
+def _return_402(resource: str, tier: dict) -> Response:
     """Return HTTP 402 with x402 payment requirements in both body and header."""
-    reqs = _payment_requirements(resource)
+    reqs = _payment_requirements(resource, tier)
     encoded = base64.b64encode(json.dumps(reqs).encode()).decode()
     return Response(
         content=json.dumps(reqs, indent=2),
         status_code=402,
-        headers={"PAYMENT-REQUIRED": encoded, "Content-Type": "application/json"},
+        headers={
+            "PAYMENT-REQUIRED": encoded,
+            "Content-Type": "application/json",
+            "X-Tier": tier["id"],
+            "X-Model": tier["model"],
+        },
     )
 
 
@@ -152,7 +242,7 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
     if SKIP_VERIFY:
         if "payload" not in proof:
             return {"success": False, "error": "Malformed proof: missing payload"}
-        print("  [skip-verify] Accepted payment proof (verification disabled)")
+        print("  [skip-verify] Accepted payment proof (verification DISABLED)")
         return {"success": True, "transaction": "skip-verify"}
 
     settle_url = f"{FACILITATOR_URL.rstrip('/')}/settle"
@@ -187,33 +277,74 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
 # ── Routes ───────────────────────────────────────────────────────
 
 
+async def list_models(request: Request) -> JSONResponse:
+    """Publish the model catalog so buyers can pick a tier before paying.
+
+    Free endpoint — no payment required. Returned shape is OpenAI-ish
+    plus an `x402` block with the tier pricing.
+    """
+    return JSONResponse(
+        {
+            "object": "list",
+            "data": [
+                {
+                    "id": tier["model"],
+                    "tier": tier["id"],
+                    "description": tier["description"],
+                    "object": "model",
+                    "owned_by": "blockrun",
+                    "x402": {
+                        "network": CAIP2_NETWORK,
+                        "asset": USDC_ASSET,
+                        "price_micro_usdc": tier["price_micro_usdc"],
+                        "price_usdc": tier["price_micro_usdc"] / 1_000_000,
+                    },
+                }
+                for tier in CATALOG
+            ],
+        }
+    )
+
+
 async def chat_completions(request: Request) -> Response:
-    """OpenAI-compatible /v1/chat/completions with x402 payment gate."""
+    """OpenAI-compatible /v1/chat/completions with tiered x402 payment gate."""
     resource = "/v1/chat/completions"
 
-    proof = _extract_payment_proof(request)
-    if not proof:
-        print(f"  402 -> {request.client.host} (no payment)")
-        return _return_402(resource)
-
-    requirements = _payment_requirements(resource)
-    settlement = await _settle_payment(proof, requirements)
-    if not settlement.get("success"):
-        err = settlement.get("error") or settlement.get("errorMessage") or settlement.get("invalidMessage")
-        print(f"  Payment rejected: {err or settlement}")
-        return _return_402(resource)
-
-    print(f"  Payment verified from {request.client.host}")
-
+    # Peek at the request body so we can price by tier before the payment step.
     try:
         body = await request.json()
     except Exception:
         body = {}
 
-    if "model" not in body:
-        body["model"] = BLOCKRUN_MODEL
+    requested = body.get("model") if isinstance(body, dict) else None
+    tier = _resolve_tier(requested)
 
-    print(f"  Proxying to BlockRun ({body.get('model')})...")
+    proof = _extract_payment_proof(request)
+    if not proof:
+        print(
+            f"  402 -> {request.client.host} (no payment)  "
+            f"tier={tier['id']} model={tier['model']} "
+            f"price=${tier['price_micro_usdc']/1_000_000:.4f}"
+        )
+        return _return_402(resource, tier)
+
+    requirements = _payment_requirements(resource, tier)
+    settlement = await _settle_payment(proof, requirements)
+    if not settlement.get("success"):
+        err = settlement.get("error") or settlement.get("errorMessage") or settlement.get("invalidMessage")
+        print(f"  Payment rejected: {err or settlement}")
+        return _return_402(resource, tier)
+
+    print(
+        f"  Payment verified from {request.client.host}  "
+        f"tier={tier['id']} price=${tier['price_micro_usdc']/1_000_000:.4f}"
+    )
+
+    # Upstream to BlockRun always uses the catalog's canonical model id.
+    if isinstance(body, dict):
+        body["model"] = tier["model"]
+
+    print(f"  Proxying to BlockRun ({tier['model']})...")
 
     client = _get_blockrun_client()
     try:
@@ -227,7 +358,9 @@ async def chat_completions(request: Request) -> Response:
             content=resp.content,
             status_code=resp.status_code,
             headers={
-                "Content-Type": resp.headers.get("content-type", "application/json")
+                "Content-Type": resp.headers.get("content-type", "application/json"),
+                "X-Tier": tier["id"],
+                "X-Model": tier["model"],
             },
         )
     except Exception as e:
@@ -242,18 +375,24 @@ async def health(request: Request) -> JSONResponse:
             "status": "ok",
             "seller": SELLER_ADDRESS,
             "network": CAIP2_NETWORK,
-            "model": BLOCKRUN_MODEL,
             "blockrun": BLOCKRUN_API_URL,
-            "price_usdc": PRICE_MICRO_USDC / 1_000_000,
+            "tiers": [
+                {
+                    "id": t["id"],
+                    "model": t["model"],
+                    "price_usdc": t["price_micro_usdc"] / 1_000_000,
+                }
+                for t in CATALOG
+            ],
+            "skip_verify": SKIP_VERIFY,
         }
     )
 
 
 app = Starlette(
     routes=[
-        Route(
-            "/v1/chat/completions", chat_completions, methods=["GET", "POST"]
-        ),
+        Route("/v1/chat/completions", chat_completions, methods=["GET", "POST"]),
+        Route("/v1/models", list_models, methods=["GET"]),
         Route("/health", health),
     ],
 )
@@ -261,17 +400,38 @@ app = Starlette(
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  Ampersend x402 Seller -> BlockRun LLM")
+    print("  Ampersend x402 Seller -> BlockRun LLM (tiered)")
     print("=" * 60)
     print(f"  Wallet  : {SELLER_ADDRESS}")
     print(f"  Network : {NETWORK} (x402: {CAIP2_NETWORK})")
-    print(f"  Model   : {BLOCKRUN_MODEL}")
     print(f"  BlockRun: {BLOCKRUN_API_URL}")
-    print(f"  Price   : ${PRICE_MICRO_USDC / 1_000_000:.4f} USDC")
-    print(f"  Verify  : {'facilitator' if not SKIP_VERIFY else 'DISABLED'}")
+    print(f"  Verify  : {'facilitator' if not SKIP_VERIFY else '*** DISABLED ***'}")
     print(f"  Port    : {PORT}")
-    print(f"\n  Endpoint: http://localhost:{PORT}/v1/chat/completions")
-    print(f"  Health : http://localhost:{PORT}/health")
-    print("=" * 60)
     print()
+    print("  Model catalog (pay-per-intelligence):")
+    for t in CATALOG:
+        price = t["price_micro_usdc"] / 1_000_000
+        default_marker = "  (default)" if t is DEFAULT_TIER else ""
+        print(f"    [{t['id']:>8}] ${price:.4f}  {t['model']}{default_marker}")
+        if t.get("description"):
+            print(f"               {t['description']}")
+    print()
+    print(f"  Endpoint: http://localhost:{PORT}/v1/chat/completions")
+    print(f"  Catalog : http://localhost:{PORT}/v1/models")
+    print(f"  Health  : http://localhost:{PORT}/health")
+    print("=" * 60)
+
+    if SKIP_VERIFY:
+        print()
+        print("  " + "!" * 56)
+        print("  !!  WARNING: SKIP_VERIFY=true — on-chain verification   !!")
+        print("  !!  is DISABLED. Payment proofs are accepted without    !!")
+        print("  !!  contacting the x402 facilitator.                    !!")
+        print("  !!                                                      !!")
+        print("  !!  This is LOCAL DEVELOPMENT ONLY. Do NOT demo or      !!")
+        print("  !!  deploy with this flag set.                          !!")
+        print("  " + "!" * 56)
+        print()
+    else:
+        print()
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
