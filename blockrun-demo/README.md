@@ -15,10 +15,11 @@ One command from the agent. Two x402 payments under the hood. **Three model tier
 
 This branch lands the feedback from AWS:
 
-- **Multi‑model routing.** The seller publishes a `/v1/models` catalog with three price tiers (*fast / balanced / premium*), each mapped to a different BlockRun model. The buyer fetches the catalog and routes the prompt to the cheapest tier that can handle it — the "dynamically route to optimal AI model" narrative, not another "What is 1+1?".
+- **Multi‑model routing.** The seller publishes a `/v1/models` catalog with three price tiers (*fast / balanced / premium*), each mapped to a different BlockRun model. The buyer fetches the catalog and routes the prompt to the cheapest tier that can handle it — the "dynamically route to optimal AI model" narrative.
 - **On‑brand prompts.** `--example eip | proposal | audit | subgraph` runs real‑world prompts: summarizing EIP‑4844, reviewing an L2 governance proposal, auditing a Solidity vault, explaining a subgraph schema.
 - **Post‑payment budget readout.** After a successful payment, the buyer briefly assumes `ManagementRole` and calls `GetPaymentSession` to print the session's **budget → spent → remaining**. The guardrails story you can see ticking down in real time.
 - **Loud `SKIP_VERIFY` warning.** When `SKIP_VERIFY=true` is set, the seller prints a large banner at startup — no more accidental unverified demos.
+- **BlockRun debug logging.** Structured request/response/error output for the seller→BlockRun leg, including timing, full headers, and tracebacks — useful for reporting upstream issues.
 
 ---
 
@@ -102,10 +103,10 @@ You should see: `/v1/models` catalog → `HTTP 402` (with the matching tier pric
 
 ### The two hops
 
-| Hop | Who pays | Who receives | How it’s signed |
+| Hop | Who pays | Who receives | How it's signed |
 |-----|----------|--------------|------------------|
-| **Buyer → Seller** | Agent (AgentCore Payments) | Seller’s Ampersend smart account | `bedrock-agentcore:ProcessPayment` returns an EIP‑3009 `transferWithAuthorization` proof |
-| **Seller → BlockRun** | Seller’s Ampersend smart account | BlockRun | Ampersend SDK intercepts 402 and signs automatically |
+| **Buyer → Seller** | Agent (AgentCore Payments) | Seller's Ampersend smart account | `bedrock-agentcore:ProcessPayment` returns an EIP‑3009 `transferWithAuthorization` proof |
+| **Seller → BlockRun** | Seller's Ampersend smart account | BlockRun | Ampersend SDK intercepts 402 and signs automatically |
 
 ### Roles (from the AgentCore Payments guide)
 
@@ -113,7 +114,7 @@ You should see: `/v1/models` catalog → `HTTP 402` (with the matching tier pric
 |----------|-------------|----------------|
 | **ControlPlaneRole** | `quickstart/setup_manager.py` | One‑time: create credential provider, manager, connector |
 | **ManagementRole** | `scripts/e2e-test.sh`; **v2 buyer for `GetPaymentSession` only** | Create instruments + sessions, read sessions, set budgets |
-| **ProcessPaymentRole** | `buyer.py` (agent) | **Only** `ProcessPayment` — can’t create/modify sessions or read them |
+| **ProcessPaymentRole** | `buyer.py` (agent) | **Only** `ProcessPayment` — can't create/modify sessions or read them |
 | **ResourceRetrievalRole** | AgentCore service (internal) | Retrieves wallet secrets at runtime |
 
 The role split is the whole point: the agent can **spend** inside a budget, but can never **raise** that budget or even read it — only the application backend (ManagementRole) can.
@@ -126,11 +127,11 @@ The seller publishes a catalog. The buyer picks a tier. The seller prices the 40
 
 ### 3.1 Seller — `/v1/models` catalog
 
-Defaults (override via `MODEL_CATALOG` JSON):
+Defaults (override via `MODEL_CATALOG` JSON or the legacy `PRICE_MICRO_USDC` / `BLOCKRUN_MODEL` env vars for the fast tier):
 
 | Tier | Model | Price | Good for |
 |------|-------|-------|----------|
-| **fast** | `openai/gpt-oss-20b` | **$0.001** | short answers, classification, cheap summaries |
+| **fast** | `openai/gpt-oss-20b` | **$0.002** | short answers, classification, cheap summaries |
 | **balanced** | `openai/gpt-oss-120b` | **$0.003** | multi‑paragraph analysis, governance summaries |
 | **premium** | `deepseek/deepseek-v3` | **$0.008** | smart‑contract audits, deep technical review |
 
@@ -139,7 +140,7 @@ curl -s http://localhost:8002/v1/models | jq
 # {
 #   "object": "list",
 #   "data": [
-#     { "id": "openai/gpt-oss-20b",   "tier": "fast",     "x402": {"price_usdc": 0.001, ...} },
+#     { "id": "openai/gpt-oss-20b",   "tier": "fast",     "x402": {"price_usdc": 0.002, ...} },
 #     { "id": "openai/gpt-oss-120b",  "tier": "balanced", "x402": {"price_usdc": 0.003, ...} },
 #     { "id": "deepseek/deepseek-v3", "tier": "premium",  "x402": {"price_usdc": 0.008, ...} }
 #   ]
@@ -151,7 +152,6 @@ curl -s http://localhost:8002/v1/models | jq
 A transparent, auditable heuristic so viewers can see *why* each prompt lands on each tier. Production routers would use a classifier or a cheap LLM call.
 
 ```python
-# buyer.py
 def pick_tier(prompt, catalog, override=None):
     p = prompt.lower()
     length = len(prompt)
@@ -194,25 +194,27 @@ python buyer.py --example audit
 The seller inspects the request body's `model` field, resolves it to a catalog tier, and returns 402 with that tier's price.
 
 ```python
-# seller.py
+# seller.py — _payment_requirements()
 tier = _resolve_tier(body.get("model"))          # fast | balanced | premium
 reqs = {
     "x402Version": 2,
     "accepts": [{
         "scheme":  "exact",
         "network": "eip155:84532",
-        "amount":  str(tier["price_micro_usdc"]),      # e.g. 8000 = $0.008
+        "amount":  str(tier["price_micro_usdc"]),      # e.g. "8000" = $0.008
         "maxAmountRequired": str(tier["price_micro_usdc"]),
         "asset":   "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
         "payTo":   SELLER_ADDRESS,
+        "maxTimeoutSeconds": 30,
         "extra":   {"name": "USDC", "version": "2", "assetTransferMethod": "eip3009"},
-        "resource": "http://localhost:8002/v1/chat/completions",
-        "outputSchema": {"tier": tier["id"], "model": tier["model"]},
+        "resource": "/v1/chat/completions",
+        "description": "BlockRun LLM inference via Ampersend",
+        "mimeType": "application/json",
+        "outputSchema": {},
     }],
 }
-return Response(json.dumps(reqs), status_code=402,
-                headers={"PAYMENT-REQUIRED": base64.b64encode(json.dumps(reqs).encode()).decode(),
-                         "X-Tier": tier["id"], "X-Model": tier["model"]})
+# Returned as HTTP 402 with PAYMENT-REQUIRED header (base64-encoded JSON)
+# and X-Tier / X-Model response headers.
 ```
 
 ### 4.2 Agent assumes `ProcessPaymentRole` and calls `ProcessPayment`
@@ -271,6 +273,31 @@ If `MANAGEMENT_ROLE_ARN` is not set, the buyer prints a friendly hint and skips 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ```
 
+### 4.5 BlockRun debug logging (v2)
+
+When the seller proxies to BlockRun, it prints structured debug blocks:
+
+```
+  ┌─── BlockRun Debug ─────────────────────────────────────
+  │ URL      : https://testnet.blockrun.ai/api/v1/chat/completions
+  │ Model    : openai/gpt-oss-20b
+  │ Timeout  : Timeout(connect=15, read=120, write=120, pool=120)
+  │ Seller   : 0x07f7...d658
+  │ Ampersend: https://api.staging.ampersend.ai
+  │ Messages : 1
+  │   [0] user: Tell me how x402 works
+  └────────────────────────────────────────────────────────
+
+  ┌─── BlockRun Response ──────────────────────────────────
+  │ Status   : 402
+  │ Elapsed  : 7.15s
+  │ Headers  : (all response headers)
+  │ Body     : (full body on errors, summary on success)
+  └────────────────────────────────────────────────────────
+```
+
+On exceptions (e.g. `ReadTimeout`), the error block includes the full traceback — suitable for pasting into a bug report.
+
 ---
 
 ## 5. Configuration
@@ -287,11 +314,12 @@ If `MANAGEMENT_ROLE_ARN` is not set, the buyer prints a friendly hint and skips 
 | `PAYMENT_SESSION_ID`, `PAYMENT_INSTRUMENT_ID`, `USER_ID` | buyer | `scripts/e2e-test.sh` output |
 | `SELLER_SMART_ACCOUNT_ADDRESS`, `SELLER_SESSION_KEY` | seller | Ampersend dashboard |
 | `NETWORK` | seller | `base-sepolia` |
+| `AMPERSEND_API_URL` | seller | `https://api.staging.ampersend.ai` (default) |
 | `MODEL_CATALOG` *(v2, optional)* | seller | JSON array — overrides the default fast/balanced/premium tiers |
 | `BLOCKRUN_MODEL`, `PRICE_MICRO_USDC` *(legacy)* | seller | Still honored — overrides the **fast** tier only |
-| `FACILITATOR_URL` | seller | `https://www.x402.org/facilitator` — if settle fails with USDC on-chain, try `https://facilitator.xpay.sh` |
-| `X402_USDC_GAS_LIMIT`, `MAX_TIMEOUT_SECONDS` | seller | *(optional)* only if a facilitator docs ask for them — changing defaults can change what AgentCore signs |
+| `FACILITATOR_URL` | seller | `https://www.x402.org/facilitator` (default) |
 | `SKIP_VERIFY` | seller | Set `true` for local dev only (loud banner) |
+| `MOCK_ON_UPSTREAM_FAILURE` | seller | Set `true` to return a synthetic LLM response when BlockRun is unreachable |
 
 ---
 
@@ -301,22 +329,37 @@ If `MANAGEMENT_ROLE_ARN` is not set, the buyer prints a friendly hint and skips 
 |---------|-----|
 | `Expecting value: line 1 column 1 (char 0)` from facilitator | Use `POST {FACILITATOR_URL}/settle` — **no** `/{network}/` in the path |
 | `Cannot convert undefined to a BigInt` | Include both `amount` and `maxAmountRequired` in `accepts[0]` |
-| `invalid_exact_evm_insufficient_balance` | Fund the `payer` address (shown in the error) with Base Sepolia USDC |
-| `invalid_exact_evm_transaction_failed` **but** [Basescan](https://sepolia.basescan.org/) shows plenty of USDC on that payer | Public `x402.org` settle can still fail (gas estimation, CDP wallet quirks). Try `FACILITATOR_URL=https://facilitator.xpay.sh`, or dev-only `SKIP_VERIFY=true`. **Coinbase CDP** payment instruments may settle more reliably through [Coinbase’s hosted facilitator](https://docs.cdp.coinbase.com/x402/docs/facilitator) (API key). Check the seller log line **Facilitator JSON:** for extra fields beyond `errorReason`. |
-| Buyer loops on *“Settlement pending”* | Facilitator is rejecting — check seller logs for the real `errorReason` |
-| `AccessDenied` on `ProcessPayment` | You didn’t assume `ProcessPaymentRole` first |
+| `invalid_exact_evm_insufficient_balance` | Fund the `payer` address (shown in the error) with Base Sepolia USDC via [Circle faucet](https://faucet.circle.com/) |
+| `invalid_exact_evm_transaction_failed` with funded payer | Public facilitators (`x402.org`, `xpay.sh`) can have relayer issues on Base Sepolia. The proof may be valid on-chain but settlement fails at the broadcast step. Try `FACILITATOR_URL=https://facilitator.xpay.sh`, or use `SKIP_VERIFY=true` for local dev. Check the seller log line **Facilitator JSON:** for the full error |
+| `SETTLEMENT_FAILED` from BlockRun (HTTP 402 with `code: SETTLEMENT_FAILED`) | BlockRun's own x402 settlement is failing — same facilitator infrastructure issue. The debug block in the seller logs will show the full error from BlockRun. Contact `@bc1max` on Telegram |
+| `ReadTimeout` from BlockRun | The Ampersend SDK client timeout may be too low. v2 sets it to 120s; if still timing out, BlockRun's settlement + inference is taking longer than 2 minutes |
+| `HTTP 502` from seller with `Upstream error:` | The seller→BlockRun leg failed. Check the seller terminal for the `BlockRun ERROR` debug block with the full traceback |
+| Buyer loops on *"Still HTTP 402"* | Facilitator is rejecting the settlement — check the seller logs for the real `errorReason` |
+| `AccessDenied` on `ProcessPayment` | You didn't assume `ProcessPaymentRole` first |
+| `TokenRetrievalError: Token has expired` | Re-authenticate: `aws sso login --profile <your-profile>` |
+| `Payment session not found` | Re-run `scripts/e2e-test.sh` to create a fresh session and instrument, then update `.env` |
 | `[after] (skipped — set MANAGEMENT_ROLE_ARN …)` | Add `MANAGEMENT_ROLE_ARN` to `.env` to see the budget readout |
-| `[after] (GetPaymentSession failed: AccessDenied)` | Your `MANAGEMENT_ROLE_ARN` doesn’t have `bedrock-agentcore:GetPaymentSession` — check `quickstart/setup_roles.sh` |
-| Buyer routes everything to `fast` | The catalog heuristic looks at keywords and length; use `--tier balanced\|premium` to force |
+| `[after] (GetPaymentSession failed: AccessDenied)` | Your `MANAGEMENT_ROLE_ARN` doesn't have `bedrock-agentcore:GetPaymentSession` — check `quickstart/setup_roles.sh` |
+| Buyer routes everything to `fast` | The catalog heuristic looks at keywords and length; use `--tier balanced|premium` to force |
 
 ---
 
-## 7. Files
+## 7. Known Issues
+
+**Base Sepolia x402 facilitator outages** (as of Apr 2026): Both `x402.org` and `xpay.sh` public facilitators intermittently return `internal_server_error` or `invalid_exact_evm_transaction_failed` when attempting to settle on Base Sepolia — even when proofs are valid on-chain. This affects both the buyer→seller leg and the seller→BlockRun leg (BlockRun uses the same facilitator infrastructure). Workarounds:
+
+- Set `SKIP_VERIFY=true` to bypass the buyer→seller facilitator check (local dev only).
+- The seller→BlockRun leg depends on BlockRun / Ampersend fixing their settlement path — no client-side workaround.
+- `MOCK_ON_UPSTREAM_FAILURE=true` returns a synthetic LLM response so you can demo the full flow shape without a live BlockRun response.
+
+---
+
+## 8. Files
 
 | File | What it is |
 |------|------------|
 | `buyer.py` | Deterministic agent: catalog → route → 402 → `ProcessPayment` → retry → `GetPaymentSession` |
-| `seller.py` | Starlette tiered x402 gate + Ampersend → BlockRun proxy + catalog endpoint |
+| `seller.py` | Starlette tiered x402 gate + Ampersend → BlockRun proxy + catalog endpoint + debug logging |
 | `.env.sample` | Copy to `.env`, fill in |
 | `requirements.txt` | `boto3`, `httpx`, `starlette`, `ampersend-sdk`, … |
 
