@@ -434,6 +434,38 @@ async def chat_completions(request: Request) -> Response:
         print("  └────────────────────────────────────────────────────────")
         print()
 
+        # BlockRun uses HTTP 402 for *its own* x402 state (Ampersend settlement, etc.).
+        # The buyer already paid *us* — forwarding 402 makes the client think *our*
+        # settlement failed and suggests funding the buyer wallet. Map to 502 instead.
+        if resp.status_code == 402:
+            print(
+                "  Note: Upstream returned HTTP 402 — returning 502 to the buyer "
+                "(their payment to this seller was already accepted)."
+            )
+            detail: dict | str
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = (resp_text or "")[:4000]
+            return JSONResponse(
+                {
+                    "error": "Upstream BlockRun x402 did not complete",
+                    "hint": (
+                        "This is the seller→BlockRun leg (Ampersend smart account), not your "
+                        "AgentCore payment to the seller. Typical causes: SETTLEMENT_FAILED, "
+                        "facilitator/relayer 500 on Base Sepolia, or BlockRun payment service outage."
+                    ),
+                    "upstream_http_status": 402,
+                    "upstream_body": detail if isinstance(detail, dict) else {"raw": detail},
+                },
+                status_code=502,
+                headers={
+                    "X-Upstream": "blockrun",
+                    "X-Tier": tier["id"],
+                    "X-Model": tier["model"],
+                },
+            )
+
         return Response(
             content=resp.content,
             status_code=resp.status_code,

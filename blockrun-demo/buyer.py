@@ -517,8 +517,10 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
         if attempt == 1:
             ph = payer_addr or "(see seller log)"
             print(
-                f"\n    Still HTTP 402 — seller rejected settlement (check seller terminal)."
-                f"\n    Payer: {ph} — fund at https://faucet.circle.com/ if low."
+                "\n    Still HTTP 402 from seller — usually means *our* payment proof was rejected "
+                "(facilitator /settle failed or malformed proof). Check seller terminal."
+                f"\n    Payer: {ph} — only fund if settlement failed with insufficient_balance."
+                "\n    (If BlockRun/Ampersend fails, the seller now returns HTTP 502 instead — not 402.)"
             )
         if attempt < max_attempts:
             time.sleep(2)
@@ -535,6 +537,12 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
         print("\n[5] GetPaymentSession (guardrails) — ManagementRole read-only:")
         show_session_budget("after")
         print("\nDone: AgentCore -> Ampersend -> BlockRun end-to-end")
+    elif result["status_code"] == 502:
+        print(
+            "\n    HTTP 502 — upstream (BlockRun / Ampersend) error after your payment was accepted."
+            "\n    This is not a 'fund the buyer wallet' issue. See seller terminal BlockRun debug block."
+        )
+        print(f"    Body: {result['body'][:1200]}")
     else:
         print(f"    Error: {result['body'][:500]}")
 

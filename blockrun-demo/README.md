@@ -333,8 +333,9 @@ On exceptions (e.g. `ReadTimeout`), the error block includes the full traceback 
 | `invalid_exact_evm_transaction_failed` with funded payer | Public facilitators (`x402.org`, `xpay.sh`) can have relayer issues on Base Sepolia. The proof may be valid on-chain but settlement fails at the broadcast step. Try `FACILITATOR_URL=https://facilitator.xpay.sh`, or use `SKIP_VERIFY=true` for local dev. Check the seller log line **Facilitator JSON:** for the full error |
 | `SETTLEMENT_FAILED` from BlockRun (HTTP 402 with `code: SETTLEMENT_FAILED`) | BlockRun's own x402 settlement is failing — same facilitator infrastructure issue. The debug block in the seller logs will show the full error from BlockRun. Contact `@bc1max` on Telegram |
 | `ReadTimeout` from BlockRun | The Ampersend SDK client timeout may be too low. v2 sets it to 120s; if still timing out, BlockRun's settlement + inference is taking longer than 2 minutes |
-| `HTTP 502` from seller with `Upstream error:` | The seller→BlockRun leg failed. Check the seller terminal for the `BlockRun ERROR` debug block with the full traceback |
-| Buyer loops on *"Still HTTP 402"* | Facilitator is rejecting the settlement — check the seller logs for the real `errorReason` |
+| `HTTP 502` with `Upstream BlockRun x402 did not complete` | BlockRun returned HTTP 402 to the Ampersend client (settlement failed, or still asking for payment). Your AgentCore payment to the seller already succeeded — this is the **seller→BlockRun** leg. Check seller logs and contact BlockRun if `SETTLEMENT_FAILED` persists |
+| `HTTP 502` from seller with `Upstream error:` | Same leg failed with an exception (e.g. `ReadTimeout`). See the `BlockRun ERROR` debug block in the seller terminal |
+| Buyer loops on *"Still HTTP 402"* | The **seller** rejected *your* proof (facilitator `/settle` failed or bad proof). If the failure is actually BlockRun, the seller maps that to **502** so you are not told to fund the buyer wallet by mistake |
 | `AccessDenied` on `ProcessPayment` | You didn't assume `ProcessPaymentRole` first |
 | `TokenRetrievalError: Token has expired` | Re-authenticate: `aws sso login --profile <your-profile>` |
 | `Payment session not found` | Re-run `scripts/e2e-test.sh` to create a fresh session and instrument, then update `.env` |
