@@ -73,8 +73,25 @@ USER_ID = os.environ.get("USER_ID", "demo-user")
 SELLER_URL = os.environ.get(
     "SELLER_URL", "http://localhost:8002/v1/chat/completions"
 )
-# Derive the catalog URL from the chat URL — swap the last path segment.
-CATALOG_URL = SELLER_URL.rsplit("/", 1)[0] + "/models"
+
+
+def _derive_catalog_url(chat_url: str) -> str:
+    """Given the chat endpoint, derive the catalog endpoint (/v1/models).
+
+    The chat URL is typically .../v1/chat/completions — so we strip back to
+    the /v1/ root and append /models. Falls back to a sibling path if the
+    URL doesn't contain /v1/.
+    """
+    override = os.environ.get("CATALOG_URL")
+    if override:
+        return override
+    if "/v1/" in chat_url:
+        base = chat_url.split("/v1/", 1)[0]
+        return f"{base}/v1/models"
+    return chat_url.rsplit("/", 1)[0] + "/models"
+
+
+CATALOG_URL = _derive_catalog_url(SELLER_URL)
 
 
 # ── Preset on-brand prompts ──────────────────────────────────────
