@@ -66,6 +66,9 @@ USDC_ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # Base Sepolia USDC
 # Use www host — bare x402.org often 308-redirects; wrong paths return HTML/empty → JSON errors.
 FACILITATOR_URL = os.environ.get("FACILITATOR_URL", "https://www.x402.org/facilitator")
 SKIP_VERIFY = os.environ.get("SKIP_VERIFY", "false").lower() == "true"
+# When BlockRun's upstream x402 payment also fails (same facilitator outage),
+# return a synthetic LLM response so the demo flow is still visible end-to-end.
+MOCK_ON_UPSTREAM_FAILURE = os.environ.get("MOCK_ON_UPSTREAM_FAILURE", "false").lower() == "true"
 
 # ── Model Catalog (the "pay-per-intelligence" story) ─────────────
 
@@ -268,6 +271,44 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def _mock_chat_response(body: dict, tier: dict) -> JSONResponse:
+    """Synthetic OpenAI-shaped response when BlockRun is unreachable."""
+    import time
+    prompt = ""
+    if isinstance(body, dict):
+        msgs = body.get("messages") or []
+        if msgs and isinstance(msgs[-1], dict):
+            prompt = msgs[-1].get("content", "")
+    text = (
+        f"[Mock response — BlockRun upstream unavailable]\n\n"
+        f"Tier: {tier['id']} | Model: {tier['model']} | "
+        f"Price: ${tier['price_micro_usdc']/1_000_000:.4f} USDC\n\n"
+        f"Your prompt ({len(prompt)} chars) was received and payment was verified. "
+        f"In production, this would be answered by {tier['model']} via BlockRun. "
+        f"The x402 facilitators on Base Sepolia are currently experiencing settlement "
+        f"failures — once they recover, both the buyer→seller and seller→BlockRun "
+        f"payment legs will settle on-chain and this mock will not be needed."
+    )
+    return JSONResponse(
+        {
+            "id": f"mock-{int(time.time())}",
+            "object": "chat.completion",
+            "model": tier["model"],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": text},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": len(prompt) // 4, "completion_tokens": len(text) // 4, "total_tokens": (len(prompt) + len(text)) // 4},
+            "x_tier": tier["id"],
+            "x_mock": True,
+        },
+        headers={"X-Tier": tier["id"], "X-Model": tier["model"], "X-Mock": "true"},
+    )
+
+
 # ── Routes ───────────────────────────────────────────────────────
 
 
@@ -351,7 +392,10 @@ async def chat_completions(request: Request) -> Response:
         )
     except Exception as e:
         print(f"  BlockRun error: {e}")
-        return JSONResponse({"error": f"Upstream error: {e}"}, status_code=502)
+        if not MOCK_ON_UPSTREAM_FAILURE:
+            return JSONResponse({"error": f"Upstream error: {e}"}, status_code=502)
+        print("  [mock] Returning synthetic response (MOCK_ON_UPSTREAM_FAILURE=true)")
+        return _mock_chat_response(body, tier)
 
 
 async def health(request: Request) -> JSONResponse:
