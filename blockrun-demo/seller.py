@@ -452,7 +452,13 @@ async def chat_completions(request: Request) -> Response:
                 "AgentCore payment to the seller. Typical causes: SETTLEMENT_FAILED, "
                 "facilitator/relayer 500 on Base Sepolia, or BlockRun payment service outage."
             )
-            if isinstance(detail, dict) and detail.get("error") == "Payment Required":
+            if isinstance(detail, dict) and detail.get("code") == "SETTLEMENT_FAILED":
+                hint += (
+                    " BlockRun reported settlement failure (often facilitator/relayer HTTP 500 on "
+                    "their side). Escalate to BlockRun (@bc1max on Telegram per their message) with "
+                    "the seller smart-account address and this trace."
+                )
+            elif isinstance(detail, dict) and detail.get("error") == "Payment Required":
                 hint += (
                     " BlockRun is asking ~$0.001 for the model call; the Ampersend client should "
                     "pay that from the seller smart account. If this response persists, fund the "
