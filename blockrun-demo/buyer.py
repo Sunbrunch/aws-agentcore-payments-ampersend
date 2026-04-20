@@ -495,8 +495,10 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
     if payer_addr:
         print(f"    Payer (USDC on Base Sepolia): {payer_addr}")
         print(
-            "    If the seller later returns 402 again, fund this address "
-            f"(≥ ${amount_usdc:.4f} for this request) — https://faucet.circle.com/"
+            "    If the seller returns HTTP 402 *for your payment proof*, this wallet may need "
+            f"≥ ${amount_usdc:.4f} USDC — https://faucet.circle.com/"
+            "\n    If you see HTTP 502 instead, that is BlockRun/Ampersend (seller→upstream), "
+            "not a signal to fund this payer address."
         )
 
     # ── [4] Retry with proof → LLM response ──────────────────────

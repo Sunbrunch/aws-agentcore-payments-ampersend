@@ -447,14 +447,21 @@ async def chat_completions(request: Request) -> Response:
                 detail = resp.json()
             except Exception:
                 detail = (resp_text or "")[:4000]
+            hint = (
+                "This is the seller→BlockRun leg (Ampersend smart account), not your "
+                "AgentCore payment to the seller. Typical causes: SETTLEMENT_FAILED, "
+                "facilitator/relayer 500 on Base Sepolia, or BlockRun payment service outage."
+            )
+            if isinstance(detail, dict) and detail.get("error") == "Payment Required":
+                hint += (
+                    " BlockRun is asking ~$0.001 for the model call; the Ampersend client should "
+                    "pay that from the seller smart account. If this response persists, fund the "
+                    "**seller** wallet on Base Sepolia (not the buyer), or check BlockRun/Ampersend status."
+                )
             return JSONResponse(
                 {
                     "error": "Upstream BlockRun x402 did not complete",
-                    "hint": (
-                        "This is the seller→BlockRun leg (Ampersend smart account), not your "
-                        "AgentCore payment to the seller. Typical causes: SETTLEMENT_FAILED, "
-                        "facilitator/relayer 500 on Base Sepolia, or BlockRun payment service outage."
-                    ),
+                    "hint": hint,
                     "upstream_http_status": 402,
                     "upstream_body": detail if isinstance(detail, dict) else {"raw": detail},
                 },
