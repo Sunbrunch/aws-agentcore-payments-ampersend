@@ -391,7 +391,9 @@ async def chat_completions(request: Request) -> Response:
             },
         )
     except Exception as e:
-        print(f"  BlockRun error: {e}")
+        import traceback
+        print(f"  BlockRun error: {type(e).__name__}: {e}")
+        traceback.print_exc()
         if not MOCK_ON_UPSTREAM_FAILURE:
             return JSONResponse({"error": f"Upstream error: {e}"}, status_code=502)
         print("  [mock] Returning synthetic response (MOCK_ON_UPSTREAM_FAILURE=true)")
