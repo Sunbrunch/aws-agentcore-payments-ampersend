@@ -102,7 +102,7 @@ DEFAULT_CATALOG = [
     {
         "id": "fast",
         "model": "openai/gpt-oss-20b",
-        "price_micro_usdc": 1000,   # $0.001
+        "price_micro_usdc": 2000,   # $0.002 — matches main; some facilitators reject exactly $0.001
         "description": "Fast, cheap. Good for short answers, quick summaries, classification.",
     },
     {
@@ -268,18 +268,15 @@ def _extract_payment_proof(request: Request) -> dict | None:
         return None
 
 
-def _payment_requirements_for_settle(accepts0: dict, x402_version: int) -> dict:
-    """Align with buyer.py / AgentCore ProcessPayment: v2 strips metadata before signing.
+def _payment_requirements_for_settle(accepts0: dict, _x402_version: int) -> dict:
+    """Return the paymentRequirements dict for the facilitator /settle call.
 
-    If we POST the full `accepts[0]` (with description, outputSchema, …) to /settle
-    while the proof was produced from the stripped payload, facilitators can reject
-    with invalid_exact_evm_transaction_failed even when USDC balance is fine.
+    The facilitator needs the **full** accepts[0] — including description, mimeType,
+    resource, outputSchema. Stripping them was wrong: AgentCore strips those before
+    *signing* (ProcessPayment), but the facilitator uses the full object for its own
+    settlement logic. The main branch sends accepts[0] as-is and that works.
     """
-    req = dict(accepts0)
-    if x402_version >= 2:
-        for key in ("description", "mimeType", "resource", "outputSchema"):
-            req.pop(key, None)
-    return req
+    return dict(accepts0)
 
 
 # ── Direct EIP-3009 simulation (diagnostic) ──────────────────────
