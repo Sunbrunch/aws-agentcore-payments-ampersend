@@ -160,6 +160,7 @@ def _get_blockrun_client() -> httpx.AsyncClient:
             smart_account_address=SELLER_ADDRESS,
             session_key_private_key=SELLER_SESSION_KEY,
             api_url=AMPERSEND_API_URL,
+            timeout=httpx.Timeout(120, connect=15),
         )
     return _blockrun_client
 
