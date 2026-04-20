@@ -339,6 +339,31 @@ def _decode_revert(data_hex: str) -> str:
     return data_hex
 
 
+async def _facilitator_verify_diagnostic(payload: dict) -> str:
+    """POST the same body as /settle to /verify — distinguishes signature vs relay failure."""
+    verify_url = f"{FACILITATOR_URL.rstrip('/')}/verify"
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.post(verify_url, json=payload, timeout=30)
+        text = (resp.text or "").strip()
+        if not text:
+            return f"empty HTTP {resp.status_code} from {verify_url}"
+        try:
+            vr = resp.json()
+        except json.JSONDecodeError:
+            return f"non-JSON HTTP {resp.status_code}: {text[:200]}"
+        valid = vr.get("isValid")
+        ir = vr.get("invalidReason") or vr.get("error")
+        im = vr.get("invalidMessage") or vr.get("message")
+        payer = vr.get("payer", "")
+        return (
+            f"isValid={valid} payer={payer} invalidReason={ir}"
+            + (f" ({im})" if im and str(im) != str(ir) else "")
+        )
+    except Exception as e:
+        return f"request failed: {e}"
+
+
 async def _simulate_eip3009(proof: dict) -> str:
     """Return a one-line diagnosis from a direct eth_call to USDC.transferWithAuthorization.
 
@@ -432,15 +457,31 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
                 ):
                     diag = await _simulate_eip3009(proof)
                     print(f"  Direct USDC simulation: {diag}")
-                    print(
-                        "  → If the revert says 'authorization is used or canceled': "
-                        "the EIP-3009 nonce has already been settled; re-create the "
-                        "payment session/instrument (bash scripts/e2e-test.sh) and try "
-                        "again. Other common causes: payer has 0 USDC on Base Sepolia, "
-                        "validAfter is in the future, or the facilitator's signer ran "
-                        "out of gas. SKIP_VERIFY=true bypasses on-chain settlement for "
-                        "local demos."
+                    vsum = await _facilitator_verify_diagnostic(payload)
+                    print(f"  Facilitator /verify: {vsum}")
+
+                    sim_ok = (
+                        "succeeded" in diag.lower()
+                        or "would accept" in diag.lower()
                     )
+                    if sim_ok:
+                        print(
+                            "  → EIP-3009 is valid on Base Sepolia (eth_call), but "
+                            "/settle failed. The problem is this facilitator's "
+                            "relayer/broadcast step (their gas wallet, RPC, or internal "
+                            "simulation), not your proof or USDC balance. Try "
+                            "FACILITATOR_URL=https://www.x402.org/facilitator, or "
+                            "Coinbase CDP's facilitator (API key). "
+                            "SKIP_VERIFY=true is local-only."
+                        )
+                    else:
+                        print(
+                            "  → If the simulation shows 'authorization is used or "
+                            "canceled': the EIP-3009 nonce was already consumed; "
+                            "re-run scripts/e2e-test.sh for a new session/instrument. "
+                            "Other causes: 0 USDC on Base Sepolia, validAfter in the "
+                            "future, or invalid signature. SKIP_VERIFY=true is local-only."
+                        )
             return result
     except Exception as e:
         print(f"  Facilitator error: {e}")

@@ -520,9 +520,10 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
         if attempt == 1:
             ph = payer_addr or "(see seller log)"
             print(
-                "\n    Still HTTP 402 — check the seller terminal for the line:\n"
-                "      'Direct USDC simulation: <reason>'\n"
-                "    That is the real reason the EIP-3009 transfer reverts on Base Sepolia.\n"
+                "\n    Still HTTP 402 — check the seller terminal for:\n"
+                "      'Direct USDC simulation: …' and 'Facilitator /verify: …'\n"
+                "    If simulation says the auth would succeed and /verify is isValid=true,\n"
+                "    /settle failed on the facilitator's relayer — try another FACILITATOR_URL.\n"
                 f"    Payer: {ph} — fund at https://faucet.circle.com/ if low."
             )
         if attempt < max_attempts:
