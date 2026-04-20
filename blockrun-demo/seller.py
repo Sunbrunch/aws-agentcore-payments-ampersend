@@ -154,6 +154,21 @@ def _caip2_network(env_network: str) -> str:
 
 CAIP2_NETWORK = _caip2_network(NETWORK)
 
+# Base Sepolia: some public facilitators fail settle with "invalid_exact_evm_transaction_failed"
+# or gas estimation errors even when the payer has USDC — see coinbase/x402#418, #1065.
+# Workarounds: (1) set FACILITATOR_URL=https://facilitator.xpay.sh  (2) optional gas hint in `extra`.
+_X402_EXTRA: dict = {
+    "name": "USDC",
+    "version": "2",
+    "assetTransferMethod": "eip3009",
+}
+if CAIP2_NETWORK == "eip155:84532":
+    # Helps some facilitators estimate gas for EIP-3009 USDC transfers on testnet.
+    gl = os.environ.get("X402_USDC_GAS_LIMIT", "300000")
+    if gl:
+        _X402_EXTRA = {**_X402_EXTRA, "gasLimit": gl}
+_MAX_TIMEOUT = int(os.environ.get("MAX_TIMEOUT_SECONDS", "120" if CAIP2_NETWORK == "eip155:84532" else "30"))
+
 # ── Ampersend HTTP client (auto-pays BlockRun via x402) ──────────
 _blockrun_client: httpx.AsyncClient | None = None
 
@@ -188,12 +203,8 @@ def _payment_requirements(resource: str, tier: dict) -> dict:
                 "maxAmountRequired": price,
                 "asset": USDC_ASSET,
                 "payTo": SELLER_ADDRESS,
-                "maxTimeoutSeconds": 30,
-                "extra": {
-                    "name": "USDC",
-                    "version": "2",
-                    "assetTransferMethod": "eip3009",
-                },
+                "maxTimeoutSeconds": _MAX_TIMEOUT,
+                "extra": dict(_X402_EXTRA),
                 "resource": resource,
                 "description": (
                     f"BlockRun LLM inference via Ampersend — tier={tier['id']} "
