@@ -481,6 +481,11 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
             requirements["accepts"][0], x402_ver
         ),
     }
+    # Debug: full settle payload (compare with `git show main:blockrun-demo/seller.py`)
+    _settle_dbg = json.dumps(payload, indent=2, default=str)
+    print(f"  [settle-debug] POST {settle_url}")
+    for line in _settle_dbg.split("\n"):
+        print(f"    {line}")
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             result: dict = {"success": False}
