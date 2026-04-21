@@ -516,9 +516,10 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
             "session" in msg.lower() or "instrument" in msg.lower()
         ):
             print(
-                "    Update PAYMENT_SESSION_ID and PAYMENT_INSTRUMENT_ID: re-run "
-                "`scripts/e2e-test.sh`, paste the new IDs into blockrun-demo/.env, "
-                "and keep USER_ID consistent with the session."
+                "    Your .env IDs don’t match an active session for this manager/user. "
+                "Re-run `scripts/e2e-test.sh` — when it passes, copy the printed "
+                "PAYMENT_SESSION_ID / PAYMENT_INSTRUMENT_ID / USER_ID lines into "
+                "blockrun-demo/.env (each e2e run creates new IDs)."
             )
             return
         raise

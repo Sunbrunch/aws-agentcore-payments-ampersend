@@ -34,6 +34,9 @@
 # Usage:
 #   cp .env.sample .env   # fill in values from quickstart output
 #   bash e2e-test.sh
+#
+# After a successful run, copy the printed PAYMENT_SESSION_ID / PAYMENT_INSTRUMENT_ID /
+# USER_ID into ../blockrun-demo/.env — each run creates new IDs.
 # =============================================================
 
 set -euo pipefail
@@ -454,6 +457,21 @@ echo ""
 
 if [[ $FAILURES -eq 0 ]]; then
     success "All $TOTAL tests passed."
+    echo ""
+    sep
+    info "blockrun-demo — paste into blockrun-demo/.env (this run’s session + instrument)"
+    echo ""
+    echo "  PAYMENT_SESSION_ID='${SESSION_ID}'"
+    echo "  PAYMENT_INSTRUMENT_ID='${INSTRUMENT_ID}'"
+    echo "  USER_ID='${USER_ID}'"
+    if [[ -n "${WALLET_ADDR:-}" ]]; then
+        echo ""
+        echo "  Fund this payer on Base Sepolia (USDC) if ProcessPayment tests need it:"
+        echo "    ${WALLET_ADDR}"
+    fi
+    echo ""
+    warn "Each e2e run creates NEW session + instrument IDs. buyer.py will fail with"
+    warn "'Payment session not found' until .env matches the latest run (or an existing session)."
 else
     fail "$FAILURES test(s) failed."
     exit 1
