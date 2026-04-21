@@ -52,6 +52,7 @@ from datetime import datetime
 
 import boto3
 import requests
+from botocore.exceptions import NoCredentialsError, TokenRetrievalError
 from dotenv import load_dotenv
 
 _ENV_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -191,11 +192,35 @@ def _boto_session(profile: str | None) -> boto3.Session:
 
 def _assume_role(role_arn: str, session_suffix: str) -> boto3.Session:
     profile = os.environ.get("AWS_PROFILE")
-    base = _boto_session(profile)
-    creds = base.client("sts").assume_role(
-        RoleArn=role_arn,
-        RoleSessionName=f"blockrun-{session_suffix}-{int(datetime.now().timestamp())}",
-    )["Credentials"]
+    try:
+        base = _boto_session(profile)
+        creds = base.client("sts").assume_role(
+            RoleArn=role_arn,
+            RoleSessionName=f"blockrun-{session_suffix}-{int(datetime.now().timestamp())}",
+        )["Credentials"]
+    except TokenRetrievalError as e:
+        prof_hint = (
+            f"aws sso login --profile {profile}"
+            if profile
+            else "aws sso login   # or: aws sso login --profile YOUR_PROFILE"
+        )
+        print(
+            "\nAWS SSO token expired or could not be refreshed.\n"
+            f"  {e}\n"
+            "  Renew credentials, then retry:\n"
+            f"    {prof_hint}\n"
+            "  If you use a named profile, set AWS_PROFILE in blockrun-demo/.env.\n",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from e
+    except NoCredentialsError as e:
+        print(
+            "\nNo AWS credentials found. Configure SSO or ~/.aws/credentials "
+            "and set AWS_PROFILE in .env if needed.\n"
+            f"  {e}\n",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from e
     return boto3.Session(
         aws_access_key_id=creds["AccessKeyId"],
         aws_secret_access_key=creds["SecretAccessKey"],
