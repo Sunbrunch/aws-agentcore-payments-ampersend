@@ -52,7 +52,7 @@ from datetime import datetime
 
 import boto3
 import requests
-from botocore.exceptions import NoCredentialsError, TokenRetrievalError
+from botocore.exceptions import ClientError, NoCredentialsError, TokenRetrievalError
 from dotenv import load_dotenv
 
 _ENV_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -505,7 +505,23 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
     print(f"\n[3] AgentCore ProcessPayment (x402 v{x402_version})...")
     print(f"    Manager : {MANAGER_ARN.split('/')[-1]}")
     print(f"    Session : {PAYMENT_SESSION_ID[:16]}...")
-    pay_result = agentcore_process_payment(dp_client, x402_payload, x402_version)
+    try:
+        pay_result = agentcore_process_payment(dp_client, x402_payload, x402_version)
+    except ClientError as e:
+        err = e.response.get("Error", {}) if e.response else {}
+        code = err.get("Code", "")
+        msg = err.get("Message", str(e))
+        print(f"    ProcessPayment failed ({code}): {msg}")
+        if code == "ValidationException" and (
+            "session" in msg.lower() or "instrument" in msg.lower()
+        ):
+            print(
+                "    Update PAYMENT_SESSION_ID and PAYMENT_INSTRUMENT_ID: re-run "
+                "`scripts/e2e-test.sh`, paste the new IDs into blockrun-demo/.env, "
+                "and keep USER_ID consistent with the session."
+            )
+            return
+        raise
     pay_result.pop("ResponseMetadata", None)
     status = pay_result.get("status", "UNKNOWN")
     print(f"    ProcessPayment -> {status}")
