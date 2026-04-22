@@ -14,17 +14,20 @@ backend would do that step and push the number back to the UI.
   • On HTTP 402, passes the merchant **accepts[0]** payload to **process_payment**
     as **cryptoX402** (v1 or v2), then retries the HTTP request with **X-PAYMENT**
     or **PAYMENT-SIGNATURE**.
-  • After a successful LLM response, calls **GetPaymentSession** via
-    **ManagementRole** (if `MANAGEMENT_ROLE_ARN` is set) and prints the session
-    budget / current spend so the guardrails story is tangible.
+  • After a successful LLM response, the **buyer** (this script — not the seller)
+    calls **GetPaymentSession** via **ManagementRole** (if `MANAGEMENT_ROLE_ARN`
+    is set) and prints budget / spent / remaining so the guardrails story is
+    visible in the buyer terminal. With ManagementRole, a **before** snapshot is
+    also printed before ProcessPayment so you can compare in one run.
 
-Demonstrates step by step:
+Demonstrates step by step (all narration on the buyer terminal except seller logs):
     [0] Assume AgentCore ProcessPaymentRole
     [1] GET  /v1/models                → pick tier for this prompt
     [2] POST /v1/chat/completions      → HTTP 402 (tiered)
+    (optional) GetPaymentSession “before” if MANAGEMENT_ROLE_ARN set
     [3] AgentCore ProcessPayment       → payment proof (PROOF_GENERATED)
     [4] Retry with proof               → LLM response from BlockRun
-    [5] GetPaymentSession (Management) → show budget decreasing
+    [5] GetPaymentSession “after”      → budget / spent / remaining (guardrails)
 
 Usage:
     python buyer.py                                # interactive
@@ -501,6 +504,13 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
         else f"    Pay to: {pay_to}"
     )
 
+    # Baseline budget (buyer terminal only — seller never calls GetPaymentSession)
+    if MANAGEMENT_ROLE_ARN:
+        print(
+            "\n    GetPaymentSession (before ProcessPayment) — compare to step [5] after success:"
+        )
+        show_session_budget("before")
+
     # ── [3] AgentCore ProcessPayment ─────────────────────────────
     print(f"\n[3] AgentCore ProcessPayment (x402 v{x402_version})...")
     print(f"    Manager : {MANAGER_ARN.split('/')[-1]}")
@@ -577,8 +587,10 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
 
     if result["status_code"] == 200:
         _print_response(result["body"])
-        # ── [5] Post-payment budget readout ──────────────────────
-        print("\n[5] GetPaymentSession (guardrails) — ManagementRole read-only:")
+        # ── [5] Post-payment budget readout (buyer terminal — not seller) ──
+        print(
+            "\n[5] GetPaymentSession (guardrails) — ManagementRole read-only, printed here in buyer:"
+        )
         show_session_budget("after")
         print("\nDone: AgentCore -> Ampersend -> BlockRun end-to-end")
     elif result["status_code"] == 502:
