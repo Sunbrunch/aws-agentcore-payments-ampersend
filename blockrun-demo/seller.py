@@ -66,9 +66,14 @@ USDC_ASSET = (
     else "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # Base Mainnet USDC
 )
 
-# Public x402.org facilitator: POST {FACILITATOR_URL}/settle (no /{network}/ in path).
-# Use www host — bare x402.org often 308-redirects; wrong paths return HTML/empty → JSON errors.
-FACILITATOR_URL = os.environ.get("FACILITATOR_URL", "https://www.x402.org/facilitator")
+# CDP facilitator (production): POST {FACILITATOR_URL}/settle
+# Requires CDP_API_KEY_ID + CDP_API_KEY_SECRET for JWT auth.
+# Fallback: x402.org (testnet only, no auth required).
+FACILITATOR_URL = os.environ.get(
+    "FACILITATOR_URL", "https://api.cdp.coinbase.com/platform/v2/x402"
+)
+CDP_API_KEY_ID = os.environ.get("CDP_API_KEY_ID", "")
+CDP_API_KEY_SECRET = os.environ.get("CDP_API_KEY_SECRET", "")
 SKIP_VERIFY = os.environ.get("SKIP_VERIFY", "false").lower() == "true"
 # When BlockRun's upstream x402 payment also fails (same facilitator outage),
 # return a synthetic LLM response so the demo flow is still visible end-to-end.
@@ -230,10 +235,40 @@ def _extract_payment_proof(request: Request) -> dict | None:
         return None
 
 
-# ── Settlement — IDENTICAL to main branch ────────────────────────
-# The settle payload shape must exactly match what worked on main.
-# No field stripping, no retry loop, no diagnostics — just the same
-# POST to {FACILITATOR_URL}/settle that main uses.
+# ── CDP Facilitator Auth ─────────────────────────────────────────
+
+
+def _cdp_auth_headers(method: str, url: str) -> dict:
+    """Generate CDP JWT bearer-token headers for the facilitator.
+
+    Returns an empty dict when CDP keys are not configured (falls back
+    to unauthenticated — works for x402.org testnet facilitator).
+    """
+    if not CDP_API_KEY_ID or not CDP_API_KEY_SECRET:
+        return {}
+    try:
+        from urllib.parse import urlparse
+
+        from cdp.auth.utils.jwt import JwtOptions, generate_jwt
+
+        parsed = urlparse(url)
+        token = generate_jwt(
+            JwtOptions(
+                api_key_id=CDP_API_KEY_ID,
+                api_key_secret=CDP_API_KEY_SECRET,
+                request_method=method,
+                request_host=parsed.hostname,
+                request_path=parsed.path,
+                expires_in=120,
+            )
+        )
+        return {"Authorization": f"Bearer {token}"}
+    except Exception as e:
+        print(f"  CDP JWT generation failed: {e}")
+        return {}
+
+
+# ── Settlement ───────────────────────────────────────────────────
 
 
 async def _settle_payment(proof: dict, requirements: dict) -> dict:
@@ -249,9 +284,12 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
         "paymentPayload": proof,
         "paymentRequirements": requirements["accepts"][0],
     }
+    auth_headers = _cdp_auth_headers("POST", settle_url)
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
-            resp = await client.post(settle_url, json=payload, timeout=30)
+            resp = await client.post(
+                settle_url, json=payload, timeout=30, headers=auth_headers
+            )
             text = (resp.text or "").strip()
             if not text:
                 err = f"empty response (HTTP {resp.status_code}) from {settle_url}"
@@ -551,7 +589,12 @@ if __name__ == "__main__":
     print(f"  Wallet  : {SELLER_ADDRESS}")
     print(f"  Network : {NETWORK} (x402: {CAIP2_NETWORK})")
     print(f"  BlockRun: {BLOCKRUN_API_URL}")
-    print(f"  Verify  : {'facilitator' if not SKIP_VERIFY else '*** DISABLED ***'}")
+    verify_label = "*** DISABLED ***" if SKIP_VERIFY else FACILITATOR_URL
+    if not SKIP_VERIFY and CDP_API_KEY_ID:
+        verify_label += " (CDP auth)"
+    elif not SKIP_VERIFY and not CDP_API_KEY_ID:
+        verify_label += " (no auth — x402.org testnet only)"
+    print(f"  Verify  : {verify_label}")
     print(f"  Port    : {PORT}")
     print()
     print("  Model catalog (pay-per-intelligence):")

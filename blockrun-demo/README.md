@@ -317,7 +317,9 @@ On exceptions (e.g. `ReadTimeout`), the error block includes the full traceback 
 | `AMPERSEND_API_URL` | seller | `https://api.ampersend.ai` (default) |
 | `MODEL_CATALOG` *(v2, optional)* | seller | JSON array — overrides the default fast/balanced/premium tiers |
 | `BLOCKRUN_MODEL`, `PRICE_MICRO_USDC` *(legacy)* | seller | Still honored — overrides the **fast** tier only |
-| `FACILITATOR_URL` | seller | `https://www.x402.org/facilitator` (default) |
+| `CDP_API_KEY_ID` | seller | CDP API key ID from [portal.cdp.coinbase.com](https://portal.cdp.coinbase.com/) — required for CDP facilitator |
+| `CDP_API_KEY_SECRET` | seller | CDP API key secret (EC private key) |
+| `FACILITATOR_URL` | seller | `https://api.cdp.coinbase.com/platform/v2/x402` (default) |
 | `SKIP_VERIFY` | seller | Set `true` for local dev only (loud banner) |
 | `MOCK_ON_UPSTREAM_FAILURE` | seller | Set `true` to return a synthetic LLM response when BlockRun is unreachable |
 
@@ -327,10 +329,10 @@ On exceptions (e.g. `ReadTimeout`), the error block includes the full traceback 
 
 | Symptom | Fix |
 |---------|-----|
-| `Expecting value: line 1 column 1 (char 0)` from facilitator | Use `POST {FACILITATOR_URL}/settle` — **no** `/{network}/` in the path |
+| `Expecting value: line 1 column 1 (char 0)` from facilitator | Ensure `FACILITATOR_URL` points to `https://api.cdp.coinbase.com/platform/v2/x402` and CDP API keys are set |
 | `Cannot convert undefined to a BigInt` | Include both `amount` and `maxAmountRequired` in `accepts[0]` |
 | `invalid_exact_evm_insufficient_balance` | Fund the `payer` address (shown in the error) with USDC on Base |
-| `invalid_exact_evm_transaction_failed` with funded payer | Public facilitators (`x402.org`, `xpay.sh`) can have relayer issues. The proof may be valid on-chain but settlement fails at the broadcast step. Try `FACILITATOR_URL=https://facilitator.xpay.sh`, or use `SKIP_VERIFY=true` for local dev. Check the seller log line **Facilitator JSON:** for the full error |
+| `invalid_exact_evm_transaction_failed` with funded payer | Settlement failed on-chain — the proof may be valid but the relayer broadcast failed. Check CDP API key auth, or use `SKIP_VERIFY=true` for local dev. Check the seller log line **Facilitator JSON:** for the full error |
 | `SETTLEMENT_FAILED` from BlockRun (HTTP 402 with `code: SETTLEMENT_FAILED`) | BlockRun's own x402 settlement is failing — same facilitator infrastructure issue. The debug block in the seller logs will show the full error from BlockRun. Contact `@bc1max` on Telegram |
 | `ReadTimeout` from BlockRun | The Ampersend SDK client timeout may be too low. v2 sets it to 120s; if still timing out, BlockRun's settlement + inference is taking longer than 2 minutes |
 | `HTTP 502` with `Upstream BlockRun x402 did not complete` | BlockRun returned HTTP 402 to the Ampersend client (settlement failed, or still asking for payment). Your AgentCore payment to the seller already succeeded — this is the **seller→BlockRun** leg. Check seller logs and contact BlockRun if `SETTLEMENT_FAILED` persists |
@@ -347,10 +349,10 @@ On exceptions (e.g. `ReadTimeout`), the error block includes the full traceback 
 
 ## 7. Known Issues
 
-**x402 facilitator outages** (as of Apr 2026): Both `x402.org` and `xpay.sh` public facilitators can intermittently return `internal_server_error` or `invalid_exact_evm_transaction_failed` — even when proofs are valid on-chain. This affects both the buyer→seller leg and the seller→BlockRun leg (BlockRun uses the same facilitator infrastructure). Workarounds:
+**Facilitator:** This demo defaults to the **CDP facilitator** (`api.cdp.coinbase.com`) which supports Base mainnet settlement with 1,000 free transactions/month. Requires `CDP_API_KEY_ID` and `CDP_API_KEY_SECRET` from [portal.cdp.coinbase.com](https://portal.cdp.coinbase.com/). The `x402.org` facilitator is testnet-only and does not support Base mainnet.
 
 - Set `SKIP_VERIFY=true` to bypass the buyer→seller facilitator check (local dev only).
-- The seller→BlockRun leg depends on BlockRun / Ampersend fixing their settlement path — no client-side workaround.
+- The seller→BlockRun leg depends on BlockRun / Ampersend settlement — no client-side workaround.
 - `MOCK_ON_UPSTREAM_FAILURE=true` returns a synthetic LLM response so you can demo the full flow shape without a live BlockRun response.
 
 ---
