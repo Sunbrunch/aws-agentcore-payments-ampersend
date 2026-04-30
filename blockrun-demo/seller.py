@@ -286,9 +286,18 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
         "paymentPayload": proof,
         "paymentRequirements": req,
     }
+    print("  [DEBUG] Settle payload:")
+    print(f"  {json.dumps(payload, indent=2, default=str)[:3000]}")
     auth_headers = _cdp_auth_headers("POST", settle_url)
+
+    verify_url = f"{FACILITATOR_URL.rstrip('/')}/verify"
+    verify_auth = _cdp_auth_headers("POST", verify_url)
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
+            vresp = await client.post(
+                verify_url, json=payload, timeout=30, headers=verify_auth
+            )
+            print(f"  [DEBUG] /verify -> HTTP {vresp.status_code}: {vresp.text[:500]}")
             resp = await client.post(
                 settle_url, json=payload, timeout=30, headers=auth_headers
             )
