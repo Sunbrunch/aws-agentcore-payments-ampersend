@@ -202,16 +202,16 @@ def main():
     # Setup x402 client with AgentCore signer
     print("\n[2/4] x402 client with AgentCore signer...")
     x402 = x402ClientSync()
-    x402.register("eip155:84532", scheme)
     x402.register("eip155:8453", scheme)
-    x402.register("base-sepolia", scheme)  # v1 legacy network name
-    x402.register("base", scheme)          # v1 legacy mainnet name
+    x402.register("eip155:84532", scheme)
+    x402.register("base", scheme)
+    x402.register("base-sepolia", scheme)  # legacy testnet name
     # Also register v1 schemes
-    x402.register_v1("eip155:84532", scheme)
     x402.register_v1("eip155:8453", scheme)
-    x402.register_v1("base-sepolia", scheme)
+    x402.register_v1("eip155:84532", scheme)
     x402.register_v1("base", scheme)
-    print("  ✅ Registered for Base Sepolia + Base Mainnet (v1 + v2)")
+    x402.register_v1("base-sepolia", scheme)
+    print("  ✅ Registered for Base Mainnet + Base Sepolia (v1 + v2)")
 
     # Connect to Bazaar
     print("\n[3/4] Connecting to Bazaar + discovering tools...")
@@ -220,7 +220,7 @@ def main():
     print("  ✅ Connected")
 
     # Discover tools
-    discovery = x402_mcp.call_tool("search_resources", {"query": "", "network": "eip155:84532"})
+    discovery = x402_mcp.call_tool("search_resources", {"query": "", "network": "eip155:8453"})
     if discovery.content:
         first = discovery.content[0]
         text = first.get("text", str(first)) if isinstance(first, dict) else (first.text if hasattr(first, 'text') else str(first))

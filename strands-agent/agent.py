@@ -321,7 +321,7 @@ def http_request_with_payment_header(
         x_payment = {
             "x402Version": 1,
             "scheme": x402_payload.get("scheme", "exact"),
-            "network": x402_payload.get("network", "base-sepolia"),
+            "network": x402_payload.get("network", "base"),
             "payload": proof.get("payload", proof),
         }
         encoded = b64.b64encode(json.dumps(x_payment).encode()).decode()
@@ -408,12 +408,12 @@ def connect_to_bazaar() -> dict:
 
 
 @tool
-def discover_bazaar_tools(network: str = "eip155:84532", query: str = "") -> dict:
+def discover_bazaar_tools(network: str = "eip155:8453", query: str = "") -> dict:
     """Search for available paid tools on the Bazaar marketplace.
     Call connect_to_bazaar first.
 
     Args:
-        network: Blockchain network filter in CAIP-2 format. Defaults to Base Sepolia.
+        network: Blockchain network filter in CAIP-2 format. Defaults to Base.
         query: Optional search query to filter tools.
 
     Returns:
@@ -522,7 +522,7 @@ def call_bazaar_tool(tool_name: str, parameters: dict = None) -> dict:
             payment_header_value = {
                 "x402Version": 1,
                 "scheme": x402_payload.get("scheme", "exact"),
-                "network": x402_payload.get("network", "base-sepolia"),
+                "network": x402_payload.get("network", "base"),
                 "payload": crypto_output.get("payload", crypto_output),
             }
             header_name = "X-PAYMENT"
@@ -624,7 +624,7 @@ Pass it through as-is — do not reconstruct or cherry-pick fields.
 ## Bazaar Flow — Paid MCP Tools
 To use paid tools from the Coinbase Bazaar marketplace:
 1. Call connect_to_bazaar to establish an MCP session
-2. Call discover_bazaar_tools to find available tools (defaults to Base Sepolia testnet)
+2. Call discover_bazaar_tools to find available tools (defaults to Base mainnet)
 3. Call call_bazaar_tool with the tool name — it handles x402 payment automatically
    (detects 402, passes merchant payload as-is to ProcessPayment, retries with proof)
 
@@ -632,8 +632,8 @@ To use paid tools from the Coinbase Bazaar marketplace:
 - Session ID: {PAYMENT_SESSION_ID}
 - Instrument ID: {PAYMENT_INSTRUMENT_ID}
 - Default pay-to address: {PAY_TO}
-- Network: Base Sepolia (eip155:84532)
-- Asset: USDC (0x036CbD53842c5426634e7929541eC2318f3dCF7e)
+- Network: Base (eip155:8453)
+- Asset: USDC (0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913)
 
 ## Important
 - Always check the payment amount before paying — report it to the user

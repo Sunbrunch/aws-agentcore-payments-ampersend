@@ -79,10 +79,10 @@ x402_payload() {
         "version": "2",
         "payload": {
           "scheme": "exact",
-          "network": "eip155:84532",
+          "network": "eip155:8453",
           "amount": $amount,
           "maxAmountRequired": $amount,
-          "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
           "payTo": $payTo,
           "maxTimeoutSeconds": 300,
           "extra": {"name": "USDC", "version": "2", "assetTransferMethod": "eip3009"}

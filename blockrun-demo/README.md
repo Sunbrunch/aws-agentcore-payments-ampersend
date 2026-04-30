@@ -7,7 +7,7 @@ A tiny, end‑to‑end demo showing how an AI agent **pays per‑intelligence** 
 - **Ampersend SDK** — lets the seller auto‑pay *its* upstream with x402
 - **BlockRun** — the paid OpenAI‑compatible LLM endpoint
 
-One command from the agent. Two x402 payments under the hood. **Three model tiers.** All on **Base Sepolia** with testnet USDC.
+One command from the agent. Two x402 payments under the hood. **Three model tiers.** All on **Base** with USDC.
 
 ---
 
@@ -46,10 +46,10 @@ pip install -r requirements.txt
 cp .env.sample .env     # paste values from the steps above
 ```
 
-Fund the two wallets on Base Sepolia:
+Fund the two wallets on Base:
 
-1. **Buyer wallet** — `walletAddress` from `CreatePaymentInstrument` → [Circle USDC faucet](https://faucet.circle.com/)
-2. **Seller wallet** — your Ampersend smart account → same faucet
+1. **Buyer wallet** — `walletAddress` from `CreatePaymentInstrument` — fund with USDC on Base
+2. **Seller wallet** — your Ampersend smart account — fund with USDC on Base
 
 Run it:
 
@@ -85,7 +85,7 @@ You should see: `/v1/models` catalog → `HTTP 402` (with the matching tier pric
          │  → bedrock-agentcore   │                        │                        │
          │    .ProcessPayment     │   ③ 402 + x402 reqs    │  • tiered x402 gate    │
          │                        │ ◀───────────────────── │  • facilitator verify  │
-         │        ④ ProcessPayment        (Base Sepolia)   │  • Ampersend SDK       │──▶ ┌─────────────┐
+         │        ④ ProcessPayment              (Base)     │  • Ampersend SDK       │──▶ ┌─────────────┐
          │           ┌─────────────────────────────────────│    (pays BlockRun)     │    │  BlockRun   │
          │           ▼                                     └────────────────────────┘    │  x402 LLM   │
          │  ┌─────────────────┐                                       ▲                  └─────────────┘
@@ -200,10 +200,10 @@ reqs = {
     "x402Version": 2,
     "accepts": [{
         "scheme":  "exact",
-        "network": "eip155:84532",
+        "network": "eip155:8453",
         "amount":  str(tier["price_micro_usdc"]),      # e.g. "8000" = $0.008
         "maxAmountRequired": str(tier["price_micro_usdc"]),
-        "asset":   "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        "asset":   "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
         "payTo":   SELLER_ADDRESS,
         "maxTimeoutSeconds": 30,
         "extra":   {"name": "USDC", "version": "2", "assetTransferMethod": "eip3009"},
@@ -279,11 +279,11 @@ When the seller proxies to BlockRun, it prints structured debug blocks:
 
 ```
   ┌─── BlockRun Debug ─────────────────────────────────────
-  │ URL      : https://testnet.blockrun.ai/api/v1/chat/completions
+  │ URL      : https://blockrun.ai/api/v1/chat/completions
   │ Model    : openai/gpt-oss-20b
   │ Timeout  : Timeout(connect=15, read=120, write=120, pool=120)
   │ Seller   : 0x07f7...d658
-  │ Ampersend: https://api.staging.ampersend.ai
+  │ Ampersend: https://api.ampersend.ai
   │ Messages : 1
   │   [0] user: Tell me how x402 works
   └────────────────────────────────────────────────────────
@@ -313,8 +313,8 @@ On exceptions (e.g. `ReadTimeout`), the error block includes the full traceback 
 | `MANAGEMENT_ROLE_ARN` *(v2, optional)* | buyer | `quickstart/setup_roles.sh` output — enables `GetPaymentSession` readout |
 | `PAYMENT_SESSION_ID`, `PAYMENT_INSTRUMENT_ID`, `USER_ID` | buyer | `scripts/e2e-test.sh` output |
 | `SELLER_SMART_ACCOUNT_ADDRESS`, `SELLER_SESSION_KEY` | seller | Ampersend dashboard |
-| `NETWORK` | seller | `base-sepolia` |
-| `AMPERSEND_API_URL` | seller | `https://api.staging.ampersend.ai` (default) |
+| `NETWORK` | seller | `base` |
+| `AMPERSEND_API_URL` | seller | `https://api.ampersend.ai` (default) |
 | `MODEL_CATALOG` *(v2, optional)* | seller | JSON array — overrides the default fast/balanced/premium tiers |
 | `BLOCKRUN_MODEL`, `PRICE_MICRO_USDC` *(legacy)* | seller | Still honored — overrides the **fast** tier only |
 | `FACILITATOR_URL` | seller | `https://www.x402.org/facilitator` (default) |
@@ -329,8 +329,8 @@ On exceptions (e.g. `ReadTimeout`), the error block includes the full traceback 
 |---------|-----|
 | `Expecting value: line 1 column 1 (char 0)` from facilitator | Use `POST {FACILITATOR_URL}/settle` — **no** `/{network}/` in the path |
 | `Cannot convert undefined to a BigInt` | Include both `amount` and `maxAmountRequired` in `accepts[0]` |
-| `invalid_exact_evm_insufficient_balance` | Fund the `payer` address (shown in the error) with Base Sepolia USDC via [Circle faucet](https://faucet.circle.com/) |
-| `invalid_exact_evm_transaction_failed` with funded payer | Public facilitators (`x402.org`, `xpay.sh`) can have relayer issues on Base Sepolia. The proof may be valid on-chain but settlement fails at the broadcast step. Try `FACILITATOR_URL=https://facilitator.xpay.sh`, or use `SKIP_VERIFY=true` for local dev. Check the seller log line **Facilitator JSON:** for the full error |
+| `invalid_exact_evm_insufficient_balance` | Fund the `payer` address (shown in the error) with USDC on Base |
+| `invalid_exact_evm_transaction_failed` with funded payer | Public facilitators (`x402.org`, `xpay.sh`) can have relayer issues. The proof may be valid on-chain but settlement fails at the broadcast step. Try `FACILITATOR_URL=https://facilitator.xpay.sh`, or use `SKIP_VERIFY=true` for local dev. Check the seller log line **Facilitator JSON:** for the full error |
 | `SETTLEMENT_FAILED` from BlockRun (HTTP 402 with `code: SETTLEMENT_FAILED`) | BlockRun's own x402 settlement is failing — same facilitator infrastructure issue. The debug block in the seller logs will show the full error from BlockRun. Contact `@bc1max` on Telegram |
 | `ReadTimeout` from BlockRun | The Ampersend SDK client timeout may be too low. v2 sets it to 120s; if still timing out, BlockRun's settlement + inference is taking longer than 2 minutes |
 | `HTTP 502` with `Upstream BlockRun x402 did not complete` | BlockRun returned HTTP 402 to the Ampersend client (settlement failed, or still asking for payment). Your AgentCore payment to the seller already succeeded — this is the **seller→BlockRun** leg. Check seller logs and contact BlockRun if `SETTLEMENT_FAILED` persists |
@@ -347,7 +347,7 @@ On exceptions (e.g. `ReadTimeout`), the error block includes the full traceback 
 
 ## 7. Known Issues
 
-**Base Sepolia x402 facilitator outages** (as of Apr 2026): Both `x402.org` and `xpay.sh` public facilitators intermittently return `internal_server_error` or `invalid_exact_evm_transaction_failed` when attempting to settle on Base Sepolia — even when proofs are valid on-chain. This affects both the buyer→seller leg and the seller→BlockRun leg (BlockRun uses the same facilitator infrastructure). Workarounds:
+**x402 facilitator outages** (as of Apr 2026): Both `x402.org` and `xpay.sh` public facilitators can intermittently return `internal_server_error` or `invalid_exact_evm_transaction_failed` — even when proofs are valid on-chain. This affects both the buyer→seller leg and the seller→BlockRun leg (BlockRun uses the same facilitator infrastructure). Workarounds:
 
 - Set `SKIP_VERIFY=true` to bypass the buyer→seller facilitator check (local dev only).
 - The seller→BlockRun leg depends on BlockRun / Ampersend fixing their settlement path — no client-side workaround.
@@ -374,4 +374,4 @@ For an **LLM‑driven** agent (instead of the deterministic one here), see `../s
 - [x402 Exact EVM spec](https://github.com/x402-foundation/x402/blob/main/specs/schemes/exact/scheme_exact_evm.md)
 - [Ampersend SDK](https://github.com/edgeandnode/ampersend-sdk)
 - [BlockRun API](https://github.com/BlockRunAI/awesome-blockrun)
-- [Circle USDC faucet](https://faucet.circle.com/) · [Base Sepolia ETH faucet](https://www.alchemy.com/faucets/base-sepolia)
+- [Base Explorer](https://basescan.org/)

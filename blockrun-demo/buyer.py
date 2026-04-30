@@ -359,7 +359,7 @@ def agentcore_process_payment(
 
 
 def _payer_from_crypto_output(crypto_output: dict) -> str | None:
-    """USDC `from` address in the EIP-3009 authorization (fund this on Base Sepolia)."""
+    """USDC `from` address in the EIP-3009 authorization."""
     try:
         pl = crypto_output.get("payload") or crypto_output
         if isinstance(pl, dict):
@@ -387,7 +387,7 @@ def build_payment_header(
         value = {
             "x402Version": 1,
             "scheme": x402_payload.get("scheme", "exact"),
-            "network": x402_payload.get("network", "base-sepolia"),
+            "network": x402_payload.get("network", "base"),
             "payload": crypto_output.get("payload", crypto_output),
         }
         header_name = "X-PAYMENT"
@@ -545,10 +545,10 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
     print("    Payment proof generated")
     payer_addr = _payer_from_crypto_output(crypto_output)
     if payer_addr:
-        print(f"    Payer (USDC on Base Sepolia): {payer_addr}")
+        print(f"    Payer (USDC on Base): {payer_addr}")
         print(
             "    If the seller returns HTTP 402 *for your payment proof*, this wallet may need "
-            f"≥ ${amount_usdc:.4f} USDC — https://faucet.circle.com/"
+            f"≥ ${amount_usdc:.4f} USDC"
             "\n    If you see HTTP 502 instead, that is BlockRun/Ampersend (seller→upstream), "
             "not a signal to fund this payer address."
         )

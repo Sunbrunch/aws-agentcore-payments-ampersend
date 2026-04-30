@@ -2,7 +2,7 @@
 
 Connect an AI agent to the [Coinbase Bazaar](https://api.cdp.coinbase.com/platform/v2/x402/discovery/mcp) — a marketplace of paid tools accessible over the Model Context Protocol (MCP) — with payments routed through AgentCore Payments.
 
-This guide uses the **Base Sepolia testnet** so you can experiment with free faucet USDC.
+This guide targets **Base mainnet** (`eip155:8453`). See the `base-sepolia` branch for testnet configuration.
 
 ---
 
@@ -26,7 +26,7 @@ All payments go through AgentCore Payments, which means:
 ## Prerequisites
 
 1. Complete the quickstart (`quickstart/setup_roles.sh` + `quickstart/setup_manager.sh`) to create your payment stack
-2. Create a payment instrument and fund it with testnet USDC (https://faucet.circle.com/)
+2. Create a payment instrument and fund it with USDC on Base
 3. Create a payment session with a budget
 4. Service models installed (`bash quickstart/setup_model.sh`)
 
@@ -63,7 +63,7 @@ The Strands agent in `strands-agent/` includes three Bazaar-specific tools:
 cd strands-agent
 pip install -r requirements.txt
 cp .env.sample .env
-python agent.py "Connect to the Bazaar, find tools on Base Sepolia, and call one"
+python agent.py "Connect to the Bazaar, find tools on Base, and call one"
 ```
 
 ---
@@ -133,4 +133,4 @@ headers["PAYMENT-SIGNATURE"] = encoded
 
 ### Wallet Funding
 
-The wallet managed by AgentCore Payments must have USDC on the target network (Base Sepolia for testnet). The facilitator verifies on-chain balance before accepting the proof. Fund the wallet via https://faucet.circle.com/ — you can find the wallet address in the payment instrument details.
+The wallet managed by AgentCore Payments must have USDC on the target network (Base mainnet). The facilitator verifies on-chain balance before accepting the proof. You can find the wallet address in the payment instrument details.

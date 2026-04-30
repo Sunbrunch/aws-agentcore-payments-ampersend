@@ -45,8 +45,8 @@ load_dotenv()
 # ── Configuration ────────────────────────────────────────────────
 SELLER_ADDRESS = os.environ["SELLER_SMART_ACCOUNT_ADDRESS"]
 SELLER_SESSION_KEY = os.environ["SELLER_SESSION_KEY"]
-NETWORK = os.environ.get("NETWORK", "base-sepolia")
-AMPERSEND_API_URL = os.environ.get("AMPERSEND_API_URL", "https://api.staging.ampersend.ai")
+NETWORK = os.environ.get("NETWORK", "base")
+AMPERSEND_API_URL = os.environ.get("AMPERSEND_API_URL", "https://api.ampersend.ai")
 PORT = int(os.environ.get("SELLER_PORT", "8002"))
 
 def _is_base_sepolia(env_network: str) -> bool:
@@ -60,7 +60,11 @@ BLOCKRUN_API_URL = (
     else "https://blockrun.ai/api/v1"
 )
 
-USDC_ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # Base Sepolia USDC
+USDC_ASSET = (
+    "0x036CbD53842c5426634e7929541eC2318f3dCF7e"  # Base Sepolia USDC
+    if _is_base_sepolia(NETWORK)
+    else "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # Base Mainnet USDC
+)
 
 # Public x402.org facilitator: POST {FACILITATOR_URL}/settle (no /{network}/ in path).
 # Use www host — bare x402.org often 308-redirects; wrong paths return HTML/empty → JSON errors.
@@ -142,6 +146,8 @@ def _caip2_network(env_network: str) -> str:
     n = (env_network or "").strip().lower()
     if n in ("base-sepolia", "base_sepolia"):
         return "eip155:84532"
+    if n in ("base", "base_mainnet"):
+        return "eip155:8453"
     return env_network
 
 
@@ -286,7 +292,7 @@ def _mock_chat_response(body: dict, tier: dict) -> JSONResponse:
         f"Price: ${tier['price_micro_usdc']/1_000_000:.4f} USDC\n\n"
         f"Your prompt ({len(prompt)} chars) was received and payment was verified. "
         f"In production, this would be answered by {tier['model']} via BlockRun. "
-        f"The x402 facilitators on Base Sepolia are currently experiencing settlement "
+        f"The x402 facilitators are currently experiencing settlement "
         f"failures — once they recover, both the buyer→seller and seller→BlockRun "
         f"payment legs will settle on-chain and this mock will not be needed."
     )
@@ -450,19 +456,19 @@ async def chat_completions(request: Request) -> Response:
             hint = (
                 "This is the seller→BlockRun leg (Ampersend smart account), not your "
                 "AgentCore payment to the seller. Typical causes: SETTLEMENT_FAILED, "
-                "facilitator/relayer 500 on Base Sepolia, or BlockRun payment service outage."
+                "facilitator/relayer 500, or BlockRun payment service outage."
             )
             if isinstance(detail, dict) and detail.get("code") == "SETTLEMENT_FAILED":
                 hint += (
-                    " BlockRun reported settlement failure (often facilitator/relayer HTTP 500 on "
-                    "their side). Escalate to BlockRun (@bc1max on Telegram per their message) with "
+                    " BlockRun reported settlement failure (often facilitator/relayer HTTP 500). "
+                    "Escalate to BlockRun (@bc1max on Telegram per their message) with "
                     "the seller smart-account address and this trace."
                 )
             elif isinstance(detail, dict) and detail.get("error") == "Payment Required":
                 hint += (
                     " BlockRun is asking ~$0.001 for the model call; the Ampersend client should "
                     "pay that from the seller smart account. If this response persists, fund the "
-                    "**seller** wallet on Base Sepolia (not the buyer), or check BlockRun/Ampersend status."
+                    "**seller** wallet (not the buyer), or check BlockRun/Ampersend status."
                 )
             return JSONResponse(
                 {

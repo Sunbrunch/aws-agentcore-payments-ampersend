@@ -25,4 +25,4 @@ The script **sources** `.env` with bash. Every value must be safe for that: **do
 - AWS CLI v2 with service models installed (`bash quickstart/setup_model.sh`)
 - `jq` — `brew install jq`
 - Completed quickstart setup (manager + connector created)
-- Wallet funded with testnet USDC (https://faucet.circle.com/)
+- Wallet funded with USDC on Base

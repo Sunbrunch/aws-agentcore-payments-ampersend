@@ -11,7 +11,7 @@ All payments go through the ProcessPayment API (boto3 SDK), which means:
 
 - Service models installed (`bash quickstart/setup_model.sh`)
 - Quickstart completed (manager + connector created)
-- Payment instrument created and funded with testnet USDC ([faucet.circle.com](https://faucet.circle.com/))
+- Payment instrument created and funded with USDC on Base
 - Payment session created with a budget
 
 You can use `scripts/e2e-test.sh` to create the instrument + session and grab the IDs.
@@ -32,9 +32,9 @@ It plugs an `AgentCoreClientScheme` (which calls ProcessPayment) into `x402MCPCl
 
 1. Assumes ProcessPaymentRole via STS
 2. Creates an AgentCore DP client pointed at the testing endpoint
-3. Registers an `AgentCoreClientScheme` with the x402 client for Base Sepolia and Base Mainnet (v1 + v2)
+3. Registers an `AgentCoreClientScheme` with the x402 client for Base Mainnet and Base Sepolia (v1 + v2)
 4. Connects to the Bazaar MCP endpoint (JSON-RPC)
-5. Discovers available paid tools on Base Sepolia
+5. Discovers available paid tools on Base
 6. Picks a known-good tool (nickeljoke) or the cheapest available
 7. Calls the tool via `x402MCPClientSync` — the x402 client intercepts the 402, calls AgentCore ProcessPayment, and retries with the payment proof automatically
 8. Verifies the payment was made and content was returned

@@ -57,7 +57,7 @@ cp .env.sample .env
 
 The application backend (using ManagementRole) must first:
 1. Create a payment instrument (`CreatePaymentInstrument`)
-2. Fund the wallet with testnet USDC (https://faucet.circle.com/)
+2. Fund the wallet with USDC on Base
 3. Create a payment session with a budget (`CreatePaymentSession`)
 4. Pass the `sessionId` and `instrumentId` to the agent
 
@@ -89,7 +89,7 @@ The agent will:
 ### Example: Use Bazaar paid MCP tools
 
 ```bash
-python agent.py "Connect to the Bazaar, find available tools on Base Sepolia, and call one"
+python agent.py "Connect to the Bazaar, find available tools on Base, and call one"
 ```
 
 The agent will:
@@ -116,7 +116,7 @@ The agent supports both x402 v1 and v2:
 |---|---|---|
 | Detection | Payment details in 402 response body | `PAYMENT-REQUIRED` header (base64 JSON) |
 | Payment header | `X-PAYMENT` | `PAYMENT-SIGNATURE` (base64 JSON with `resource`, `accepted`, `extension` fields) |
-| Network format | `base-sepolia` | `eip155:84532` (CAIP-2) |
+| Network format | `base` | `eip155:8453` (CAIP-2) |
 
 The `http_request` tool auto-detects the version and returns `x402_version` + `accepted_requirements` so the agent knows which format to use on retry.
 
@@ -128,7 +128,7 @@ The v1 `X-PAYMENT` header is a base64-encoded JSON object with `x402Version`, `s
 {
   "x402Version": 1,
   "scheme": "exact",
-  "network": "base-sepolia",
+  "network": "base",
   "payload": {
     "signature": "0x...",
     "authorization": {

@@ -94,7 +94,7 @@ The other three roles (ControlPlane, Management, ProcessPayment) should have a t
 
 #### 3. Coinbase CDP API Keys and Wallet Funding
 
-AgentCore Payments uses [Coinbase Developer Platform (CDP)](https://www.coinbase.com/developer-platform) as the wallet provider during the preview. You need CDP API credentials and a funded testnet wallet.
+AgentCore Payments uses [Coinbase Developer Platform (CDP)](https://www.coinbase.com/developer-platform) as the wallet provider during the preview. You need CDP API credentials and a funded wallet.
 
 **Step 1: Create a CDP API key**
 
@@ -113,18 +113,16 @@ AgentCore Payments uses [Coinbase Developer Platform (CDP)](https://www.coinbase
 > - Review the [Coinbase Server Wallet v2 security architecture](https://docs.cdp.coinbase.com/server-wallets/v2/introduction/security)
 > - Rotate keys according to your company's security practices. Refer to the [AWS Shared Responsibility Model](https://aws.amazon.com/compliance/shared-responsibility-model/)
 
-**Step 2: Fund your testnet wallet**
+**Step 2: Fund your wallet**
 
-After running the quickstart (which creates a wallet via `CreatePaymentInstrument`), fund it with testnet USDC:
+After running the quickstart (which creates a wallet via `CreatePaymentInstrument`), fund it with USDC on Base:
 
 1. Copy the `walletAddress` from the `CreatePaymentInstrument` response
-2. Go to the Circle USDC faucet: https://faucet.circle.com/
-3. Select **Base Sepolia** as the network
-4. Paste your wallet address and request USDC
+2. Send USDC on Base (chain ID 8453) to your wallet address
 
-The faucet provides free testnet USDC — no real money is involved. You can verify the balance on [Base Sepolia Explorer](https://sepolia.basescan.org/) by searching for your wallet address.
+You can verify the balance on [Base Explorer](https://basescan.org/) by searching for your wallet address.
 
-> **Note:** All testing uses the Base Sepolia testnet (`eip155:84532`). Do not use mainnet wallets or real cryptocurrency.
+> **Note:** This guide targets **Base mainnet** (`eip155:8453`). The `base-sepolia` branch preserves the testnet configuration if needed.
 
 
 ## API Overview
@@ -403,7 +401,7 @@ print(f"Instrument ID:  {instrument_id}")
 print(f"Wallet Address: {wallet_address}")
 ```
 
-> **Save:** Note the `paymentInstrumentId` and `walletAddress` from the response. Fund the wallet with testnet USDC at https://faucet.circle.com/ (select Base Sepolia).
+> **Save:** Note the `paymentInstrumentId` and `walletAddress` from the response. Fund the wallet with USDC on Base.
 
 > **Note:** To use Solana, specify `"SOLANA"` in the network and fund the wallet with testnet USDC at https://faucet.circle.com/ (select Solana Devnet) for your testing.
 
@@ -495,10 +493,10 @@ resp = dp.process_payment(
             "version": "2",
             "payload": {
                 "scheme": "exact",
-                "network": "eip155:84532",       # Base Sepolia
+                "network": "eip155:8453",        # Base
                 "amount": "100000",               # $0.10 USDC
                 "maxAmountRequired": "100000",    # required for v1 and v2
-                "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",  # USDC contract
+                "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",  # USDC contract
                 "payTo": "<add_merchant_address>",  # recipient
                 "maxTimeoutSeconds": 300,
                 "extra": {"name": "USDC", "version": "2"},
@@ -519,14 +517,14 @@ If you want to use version 1, use the payload below:
 ```python
 "payload": {
     "scheme": "exact",
-    "network": "base-sepolia",
+    "network": "base",
     "maxAmountRequired": "5000",
     "resource": "https://nickeljoke.vercel.app/api/joke",
     "description": "Premium AI joke generation",
     "mimeType": "application/json",
     "payTo": "<add_merchant_address>",
     "maxTimeoutSeconds": 300,
-    "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     "outputSchema": {
         "input": {
             "type": "http",
@@ -699,8 +697,8 @@ When an endpoint returns HTTP 402:
 ## Configuration
 - Session ID: <injected at runtime>
 - Instrument ID: <injected at runtime>
-- Network: Base Sepolia (eip155:84532)
-- Asset: USDC (0x036CbD53842c5426634e7929541eC2318f3dCF7e)
+- Network: Base (eip155:8453)
+- Asset: USDC (0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913)
 ```
 
 #### Step 2a: Agent with tools (Strands, LangGraph, CrewAI)

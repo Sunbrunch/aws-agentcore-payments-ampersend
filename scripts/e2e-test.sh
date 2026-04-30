@@ -29,7 +29,7 @@
 #   - AWS CLI v2 with service models installed (bash quickstart/setup_model.sh)
 #   - jq
 #   - .env file with config values
-#   - Wallet funded with testnet USDC (https://faucet.circle.com/)
+#   - Wallet funded with USDC on Base
 #
 # Usage:
 #   cp .env.sample .env   # fill in values from quickstart output
@@ -336,10 +336,10 @@ PAYMENT_INPUT=$(jq -n --arg payTo "$PAY_TO" --arg amount "$PAYMENT_AMOUNT" '{
         "version": "2",
         "payload": {
             "scheme": "exact",
-            "network": "eip155:84532",
+            "network": "eip155:8453",
             "amount": $amount,
             "maxAmountRequired": $amount,
-            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
             "payTo": $payTo,
             "maxTimeoutSeconds": 300,
             "extra": {"name": "USDC", "version": "2"}
@@ -466,7 +466,7 @@ if [[ $FAILURES -eq 0 ]]; then
     echo "  USER_ID='${USER_ID}'"
     if [[ -n "${WALLET_ADDR:-}" ]]; then
         echo ""
-        echo "  Fund this payer on Base Sepolia (USDC) if ProcessPayment tests need it:"
+        echo "  Fund this payer on Base (USDC) if ProcessPayment tests need it:"
         echo "    ${WALLET_ADDR}"
     fi
     echo ""
