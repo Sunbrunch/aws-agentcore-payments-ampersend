@@ -279,10 +279,12 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
         return {"success": True, "transaction": "skip-verify"}
 
     settle_url = f"{FACILITATOR_URL.rstrip('/')}/settle"
+    req = {k: v for k, v in requirements["accepts"][0].items()
+           if k not in ("description", "mimeType", "outputSchema", "resource")}
     payload = {
         "x402Version": proof.get("x402Version", 2),
         "paymentPayload": proof,
-        "paymentRequirements": requirements["accepts"][0],
+        "paymentRequirements": req,
     }
     auth_headers = _cdp_auth_headers("POST", settle_url)
     try:

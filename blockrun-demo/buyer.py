@@ -375,12 +375,19 @@ def build_payment_header(
 ) -> tuple[str, str]:
     """Build the x402 payment header (base64-encoded) for the retry request."""
     if x402_version >= 2:
+        accepted = {k: v for k, v in x402_payload.items()
+                    if k not in ("description", "mimeType", "outputSchema", "resource")}
+        resource_path = x402_payload.get("resource", "")
         value = {
             "x402Version": 2,
-            "resource": x402_payload.get("resource", ""),
-            "accepted": x402_payload,
+            "accepted": accepted,
             "payload": crypto_output.get("payload", crypto_output),
-            "extension": x402_payload.get("resource", ""),
+            "resource": {
+                "url": resource_path,
+                "description": x402_payload.get("description", ""),
+                "mimeType": x402_payload.get("mimeType", "application/json"),
+            },
+            "extensions": {},
         }
         header_name = "PAYMENT-SIGNATURE"
     else:
