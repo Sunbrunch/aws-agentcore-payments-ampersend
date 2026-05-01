@@ -1493,9 +1493,27 @@
     "LinkedAccount":{
       "type":"structure",
       "members":{
+        "email":{"shape":"EmailLinkedAccount"},
         "accountId":{"shape":"String"},
         "provider":{"shape":"String"}
       }
+    },
+    "EmailLinkedAccount":{
+      "type":"structure",
+      "required":["emailAddress"],
+      "members":{
+        "emailAddress":{"shape":"String"}
+      }
+    },
+    "EmbeddedCryptoWallet":{
+      "type":"structure",
+      "required":["network"],
+      "members":{
+        "network":{"shape":"CryptoWalletNetwork"},
+        "walletAddress":{"shape":"String"},
+        "linkedAccounts":{"shape":"LinkedAccountList"}
+      },
+      "documentation":"<p>Embedded crypto wallet with delegated Coinbase signing</p>"
     },
     "CryptoWalletNetwork":{
       "type":"string",
@@ -3068,6 +3086,7 @@
         "userId":{"shape":"UserId"},
         "paymentInstrumentType":{"shape":"PaymentInstrumentType"},
         "paymentInstrumentDetails":{"shape":"PaymentInstrumentDetails"},
+        "redirectUrl":{"shape":"String"},
         "createdAt":{"shape":"DateTimestamp"},
         "status":{"shape":"PaymentInstrumentStatus"},
         "updatedAt":{"shape":"DateTimestamp"}
@@ -3077,7 +3096,8 @@
     "PaymentInstrumentDetails":{
       "type":"structure",
       "members":{
-        "cryptoWallet":{"shape":"CryptoWallet"}
+        "cryptoWallet":{"shape":"CryptoWallet"},
+        "embeddedCryptoWallet":{"shape":"EmbeddedCryptoWallet"}
       },
       "documentation":"<p>Details specific to the instrument type</p>",
       "union":true
@@ -3102,7 +3122,7 @@
     "PaymentInstrumentType":{
       "type":"string",
       "documentation":"<p>The type of payment instrument</p>",
-      "enum":["CRYPTO_WALLET"]
+      "enum":["CRYPTO_WALLET","EMBEDDED_CRYPTO_WALLET"]
     },
     "PaymentManagerArn":{
       "type":"string",

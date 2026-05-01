@@ -341,7 +341,8 @@ On exceptions (e.g. `ReadTimeout`), the error block includes the full traceback 
 | `AccessDenied` on `ProcessPayment` | You didn't assume `ProcessPaymentRole` first |
 | `TokenRetrievalError: Token has expired` | Re-authenticate: `aws sso login --profile <your-profile>` |
 | `Payment session not found` | Re-run `scripts/e2e-test.sh` to create a fresh session and instrument, then update `.env` |
-| `CreatePaymentInstrument` / `CreatePaymentSession` ParamValidation vs ValidationException | **Two layers:** the AWS CLI validates against its bundled botocore model; the **service** may expect newer field names. `e2e-test.sh` retries B1 with `cryptoWallet` if the CLI rejects `embeddedCryptoWallet`. B4 uses `--expiry-duration` for older CLIs. If the **service** still errors after that, run `pip install -U awscli botocore` (or upgrade the official AWS CLI installer build). |
+| `CreatePaymentInstrument` ValidationException (enum) | `CRYPTO_WALLET` is deprecated — only `EMBEDDED_CRYPTO_WALLET` is accepted. Set `LINKED_ACCOUNT_EMAIL` in `scripts/.env` and configure Coinbase delegated signing in your CDP developer account. Re-run `bash quickstart/setup_model.sh` after pulling the latest model. |
+| `CreatePaymentSession` ParamValidation | CLI may not know `--expiry-time-in-minutes` — `e2e-test.sh` falls back to `--expiry-duration` for older CLIs. Run `pip install -U awscli botocore` if issues persist. |
 | `[after] (skipped — set MANAGEMENT_ROLE_ARN …)` | Add `MANAGEMENT_ROLE_ARN` to `.env` to see the budget readout |
 | `[after] (GetPaymentSession failed: AccessDenied)` | Your `MANAGEMENT_ROLE_ARN` doesn't have `bedrock-agentcore:GetPaymentSession` — check `quickstart/setup_roles.sh` |
 | Buyer routes everything to `fast` | The catalog heuristic looks at keywords and length; use `--tier balanced|premium` to force |

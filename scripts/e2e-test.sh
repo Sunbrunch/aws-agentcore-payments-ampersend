@@ -26,12 +26,11 @@
 #     D2. list-payment-sessions
 #
 # Prerequisites:
-#   - AWS CLI v2 + botocore recent enough for bedrock-agentcore (model drifts by region).
-#     B1 tries embeddedCryptoWallet then falls back to cryptoWallet for older CLIs.
-#     If the *service* still rejects B1, upgrade: pip install -U awscli botocore
-#   - AWS CLI v2 with service models installed (bash quickstart/setup_model.sh)
+#   - AWS CLI v2 + botocore with bedrock-agentcore model installed (bash quickstart/setup_model.sh)
 #   - jq
-#   - .env file with config values
+#   - .env file with config values (see .env.sample)
+#   - LINKED_ACCOUNT_EMAIL set in .env (Coinbase delegated signing email)
+#   - Coinbase delegated signing configured in your CDP developer account
 #   - Wallet funded with USDC on Base
 #
 # Usage:
@@ -73,6 +72,7 @@ USER_ID="${USER_ID:-test-user-sdk}"
 PAY_TO="${PAY_TO:-0x312554704B5c47b992e876639B144e9B85431E44}"
 SESSION_LIMIT_USD="${SESSION_LIMIT_USD:-100.0}"
 PAYMENT_AMOUNT="${PAYMENT_AMOUNT:-100000}"
+LINKED_ACCOUNT_EMAIL="${LINKED_ACCOUNT_EMAIL:-}"
 
 MANAGER_ID="${MANAGER_ARN##*/}"
 
@@ -222,16 +222,23 @@ echo ""
 sep
 info "Test B1: create-payment-instrument (SDK)"
 
-# CRYPTO_WALLET: server-managed CDP wallet. No Coinbase delegated signing required.
-# EMBEDDED_CRYPTO_WALLET: requires linkedAccounts with email + Coinbase delegated signing setup.
-# For the demo we use CRYPTO_WALLET — simpler, works with existing connectors.
+# EMBEDDED_CRYPTO_WALLET: requires linkedAccounts with email + Coinbase delegated signing.
+# CRYPTO_WALLET is deprecated in production — only EMBEDDED_CRYPTO_WALLET is accepted.
+if [[ -z "$LINKED_ACCOUNT_EMAIL" ]]; then
+    warn "LINKED_ACCOUNT_EMAIL not set — using empty linkedAccounts (may fail)"
+    INST_DETAILS='{"embeddedCryptoWallet":{"network":"ETHEREUM","linkedAccounts":[]}}'
+else
+    INST_DETAILS=$(jq -n --arg email "$LINKED_ACCOUNT_EMAIL" \
+        '{"embeddedCryptoWallet":{"network":"ETHEREUM","linkedAccounts":[{"email":{"emailAddress":$email}}]}}')
+fi
+
 CREATE_INST=$(aws bedrock-agentcore create-payment-instrument \
     --region "$REGION" \
     --endpoint-url "$DP_ENDPOINT" \
     --payment-manager-arn "$MANAGER_ARN" \
     --payment-connector-id "$CONNECTOR_ID" \
-    --payment-instrument-type "CRYPTO_WALLET" \
-    --payment-instrument-details '{"cryptoWallet":{"network":"ETHEREUM"}}' \
+    --payment-instrument-type "EMBEDDED_CRYPTO_WALLET" \
+    --payment-instrument-details "$INST_DETAILS" \
     --user-id "$USER_ID" \
     --output json 2>&1) || true
 
@@ -242,16 +249,29 @@ else
 fi
 
 INSTRUMENT_ID=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentId // empty' 2>/dev/null || true)
-WALLET_ADDR=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentDetails.cryptoWallet.walletAddress // empty' 2>/dev/null || true)
+WALLET_ADDR=$(echo "$CREATE_INST" | jq -r '
+    .paymentInstrument.paymentInstrumentDetails.embeddedCryptoWallet.walletAddress //
+    .paymentInstrument.paymentInstrumentDetails.cryptoWallet.walletAddress //
+    empty' 2>/dev/null || true)
 
 SKIP_INSTRUMENT=false
 if [[ -z "$INSTRUMENT_ID" || "$INSTRUMENT_ID" == "null" ]]; then
     SKIP_INSTRUMENT=true
 fi
 
+REDIRECT_URL=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.redirectUrl // empty' 2>/dev/null || true)
+
 if [[ "$SKIP_INSTRUMENT" != "true" ]]; then
     success "create-payment-instrument (instrumentId: $INSTRUMENT_ID)"
     echo "  walletAddress: $WALLET_ADDR"
+    if [[ -n "$REDIRECT_URL" && "$REDIRECT_URL" != "null" ]]; then
+        echo ""
+        info "  🔗 WalletHub (end-user delegation + funding):"
+        echo "  $REDIRECT_URL"
+        echo ""
+        warn "Open this URL in a browser to grant delegated signing and fund the wallet."
+        warn "ProcessPayment (C1) will fail until the end user completes this step."
+    fi
     PASSED=$((PASSED+1))
 else
     fail "create-payment-instrument"
