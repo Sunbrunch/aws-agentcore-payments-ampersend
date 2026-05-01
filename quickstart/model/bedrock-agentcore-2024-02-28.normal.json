@@ -1437,7 +1437,7 @@
       "type":"structure",
       "required":[
         "paymentManagerArn",
-        "expiryDuration"
+        "expiryTimeInMinutes"
       ],
       "members":{
         "userId":{
@@ -1448,12 +1448,13 @@
         "paymentManagerArn":{"shape":"PaymentManagerArn"},
         "limits":{"shape":"SessionLimits"},
         "expiryDuration":{"shape":"CreatePaymentSessionRequestExpiryDurationInteger"},
+        "expiryTimeInMinutes":{"shape":"PaymentSessionExpiryTimeInMinutesInteger"},
         "clientToken":{
           "shape":"ClientToken",
           "idempotencyToken":true
         }
       },
-      "documentation":"<p>Request structure for creating a payment session</p>"
+      "documentation":"<p>Request structure for creating a payment session (use expiryTimeInMinutes)</p>"
     },
     "CreatePaymentSessionRequestExpiryDurationInteger":{
       "type":"integer",
@@ -3064,9 +3065,10 @@
     "PaymentInstrumentDetails":{
       "type":"structure",
       "members":{
-        "cryptoWallet":{"shape":"CryptoWallet"}
+        "cryptoWallet":{"shape":"CryptoWallet"},
+        "embeddedCryptoWallet":{"shape":"CryptoWallet"}
       },
-      "documentation":"<p>Details specific to the instrument type (use cryptoWallet for EMBEDDED_CRYPTO_WALLET)</p>",
+      "documentation":"<p>Details specific to the instrument type; EMBEDDED_CRYPTO_WALLET uses embeddedCryptoWallet</p>",
       "union":true
     },
     "PaymentInstrumentId":{

@@ -389,7 +389,7 @@ resp = dp.create_payment_instrument(
     userId="user-123",
     paymentInstrumentType="EMBEDDED_CRYPTO_WALLET",
     paymentInstrumentDetails={
-        "cryptoWallet": {"network": "ETHEREUM"}
+        "embeddedCryptoWallet": {"network": "ETHEREUM"}
     },
     clientToken=str(uuid.uuid4()) + "-" + str(uuid.uuid4())[:8],
 )
@@ -397,7 +397,9 @@ resp = dp.create_payment_instrument(
 instrument = resp["paymentInstrument"]
 instrument_id = instrument["paymentInstrumentId"]
 details = instrument.get("paymentInstrumentDetails") or {}
-wallet_address = (details.get("cryptoWallet") or {}).get("walletAddress")
+emb = details.get("embeddedCryptoWallet") or {}
+cw = details.get("cryptoWallet") or {}
+wallet_address = emb.get("walletAddress") or cw.get("walletAddress")
 print(f"Instrument ID:  {instrument_id}")
 print(f"Wallet Address: {wallet_address}")
 ```
@@ -449,7 +451,7 @@ Create a time-bound session with spending limits (optional). This is typically d
 resp = dp.create_payment_session(
     paymentManagerArn=manager_arn,
     userId="user-123",
-    expiryDuration=300,  # minutes – minimum 15 mins and max 480 mins.
+    expiryTimeInMinutes=300,  # minimum 15, max 480 (field name on current DP API)
     limits={
         "maxSpendAmount": {
             "value": "1.0",       # string — $1.00 USD
@@ -467,6 +469,7 @@ print(f"Session ID: {session_id}")
 
 > **Notes:**
 > - `value` must be a string (`"1.0"`), not a number.
+> - Use `expiryTimeInMinutes` for session TTL. Older examples used `expiryDuration`; the live API may require `expiryTimeInMinutes`.
 > - `currency` is `"USD"` (not `"USDC"`). The service converts USDC to USD for budget enforcement.
 > - `userId` is required for all APIs and isolates each user's content. Use your existing SSO/CRM system to populate this field in production.
 > - The agent receives the `paymentSessionId` and `paymentInstrumentId` but cannot create new sessions or modify the budget.

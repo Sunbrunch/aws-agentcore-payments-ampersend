@@ -219,15 +219,15 @@ echo ""
 sep
 info "Test B1: create-payment-instrument (SDK)"
 
-# AgentCore DP expects EMBEDDED_CRYPTO_WALLET (CRYPTO_WALLET removed).
-# paymentInstrumentDetails still uses the cryptoWallet union member (not embeddedCryptoWallet).
+# EMBEDDED_CRYPTO_WALLET requires embeddedCryptoWallet.network (server validation).
+# Older AWS CLI builds may ParamValidate on this key — upgrade CLI/botocore if so.
 CREATE_INST=$(aws bedrock-agentcore create-payment-instrument \
     --region "$REGION" \
     --endpoint-url "$DP_ENDPOINT" \
     --payment-manager-arn "$MANAGER_ARN" \
     --payment-connector-id "$CONNECTOR_ID" \
     --payment-instrument-type "EMBEDDED_CRYPTO_WALLET" \
-    --payment-instrument-details '{"cryptoWallet":{"network":"ETHEREUM"}}' \
+    --payment-instrument-details '{"embeddedCryptoWallet":{"network":"ETHEREUM"}}' \
     --user-id "$USER_ID" \
     --output json 2>&1) || true
 
@@ -238,7 +238,11 @@ else
 fi
 
 INSTRUMENT_ID=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentId // empty' 2>/dev/null || true)
-WALLET_ADDR=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentDetails.cryptoWallet.walletAddress // empty' 2>/dev/null || true)
+WALLET_ADDR=$(echo "$CREATE_INST" | jq -r '
+  (.paymentInstrument.paymentInstrumentDetails.embeddedCryptoWallet.walletAddress
+   // .paymentInstrument.paymentInstrumentDetails.cryptoWallet.walletAddress
+   // empty)
+' 2>/dev/null || true)
 
 SKIP_INSTRUMENT=false
 if [[ -z "$INSTRUMENT_ID" || "$INSTRUMENT_ID" == "null" ]]; then
@@ -314,16 +318,29 @@ echo ""
 sep
 info "Test B4: create-payment-session (SDK)"
 
+# Live DP expects expiryTimeInMinutes; --expiry-duration can leave it null on the wire.
+CREATE_SESS_JSON=$(jq -n \
+    --arg arn "$MANAGER_ARN" \
+    --arg val "$SESSION_LIMIT_USD" \
+    --arg ct "$(uuid)" \
+    '{
+        paymentManagerArn: $arn,
+        limits: { maxSpendAmount: { value: $val, currency: "USD" } },
+        expiryTimeInMinutes: 300,
+        clientToken: $ct
+    }')
 CREATE_SESS=$(aws bedrock-agentcore create-payment-session \
     --region "$REGION" \
     --endpoint-url "$DP_ENDPOINT" \
-    --payment-manager-arn "$MANAGER_ARN" \
-    --expiry-duration 300 \
-    --limits '{"maxSpendAmount":{"value":"'"$SESSION_LIMIT_USD"'","currency":"USD"}}' \
     --user-id "$USER_ID" \
+    --cli-input-json "$CREATE_SESS_JSON" \
     --output json 2>&1) || true
 
-echo "$CREATE_SESS" | jq . 2>/dev/null || echo "$CREATE_SESS"
+if echo "$CREATE_SESS" | jq -e . >/dev/null 2>&1; then
+    echo "$CREATE_SESS" | jq .
+else
+    echo "$CREATE_SESS"
+fi
 
 SESSION_ID=$(echo "$CREATE_SESS" | jq -r '.paymentSession.paymentSessionId // empty' 2>/dev/null || true)
 SKIP_SESSION=false
