@@ -219,15 +219,15 @@ echo ""
 sep
 info "Test B1: create-payment-instrument (SDK)"
 
-# AgentCore DP now expects EMBEDDED_CRYPTO_WALLET (CRYPTO_WALLET removed).
-# Details use embeddedCryptoWallet; network ETHEREUM = all supported EVM chains per AWS.
+# AgentCore DP expects EMBEDDED_CRYPTO_WALLET (CRYPTO_WALLET removed).
+# paymentInstrumentDetails still uses the cryptoWallet union member (not embeddedCryptoWallet).
 CREATE_INST=$(aws bedrock-agentcore create-payment-instrument \
     --region "$REGION" \
     --endpoint-url "$DP_ENDPOINT" \
     --payment-manager-arn "$MANAGER_ARN" \
     --payment-connector-id "$CONNECTOR_ID" \
     --payment-instrument-type "EMBEDDED_CRYPTO_WALLET" \
-    --payment-instrument-details '{"embeddedCryptoWallet":{"network":"ETHEREUM"}}' \
+    --payment-instrument-details '{"cryptoWallet":{"network":"ETHEREUM"}}' \
     --user-id "$USER_ID" \
     --output json 2>&1) || true
 
@@ -238,13 +238,14 @@ else
 fi
 
 INSTRUMENT_ID=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentId // empty' 2>/dev/null || true)
-WALLET_ADDR=$(echo "$CREATE_INST" | jq -r '
-  (.paymentInstrument.paymentInstrumentDetails.embeddedCryptoWallet.walletAddress
-   // .paymentInstrument.paymentInstrumentDetails.cryptoWallet.walletAddress
-   // empty)
-' 2>/dev/null || true)
+WALLET_ADDR=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentDetails.cryptoWallet.walletAddress // empty' 2>/dev/null || true)
 
-if [[ -n "$INSTRUMENT_ID" && "$INSTRUMENT_ID" != "null" ]]; then
+SKIP_INSTRUMENT=false
+if [[ -z "$INSTRUMENT_ID" || "$INSTRUMENT_ID" == "null" ]]; then
+    SKIP_INSTRUMENT=true
+fi
+
+if [[ "$SKIP_INSTRUMENT" != "true" ]]; then
     success "create-payment-instrument (instrumentId: $INSTRUMENT_ID)"
     echo "  walletAddress: $WALLET_ADDR"
     PASSED=$((PASSED+1))
@@ -258,6 +259,9 @@ echo ""
 sep
 info "Test B2: get-payment-instrument (SDK)"
 
+if [[ "$SKIP_INSTRUMENT" == "true" ]]; then
+    warn "Skipping B2 — no instrument id from B1 (avoid empty paymentInstrumentId / jq noise)"
+else
 GET_INST=$(aws bedrock-agentcore get-payment-instrument \
     --region "$REGION" \
     --endpoint-url "$DP_ENDPOINT" \
@@ -267,14 +271,19 @@ GET_INST=$(aws bedrock-agentcore get-payment-instrument \
     --user-id "$USER_ID" \
     --output json 2>&1) || true
 
-echo "$GET_INST" | jq . 2>/dev/null || echo "$GET_INST"
+if echo "$GET_INST" | jq -e . >/dev/null 2>&1; then
+    echo "$GET_INST" | jq .
+else
+    echo "$GET_INST"
+fi
 
-INST_STATUS=$(echo "$GET_INST" | jq -r '.paymentInstrument.status // empty')
+INST_STATUS=$(echo "$GET_INST" | jq -r '.paymentInstrument.status // empty' 2>/dev/null || true)
 if [[ "$INST_STATUS" == "ACTIVE" ]]; then
     success "get-payment-instrument (status: ACTIVE)"
     PASSED=$((PASSED+1))
 else
     fail "get-payment-instrument (status: $INST_STATUS)"
+fi
 fi
 echo ""
 
@@ -316,8 +325,13 @@ CREATE_SESS=$(aws bedrock-agentcore create-payment-session \
 
 echo "$CREATE_SESS" | jq . 2>/dev/null || echo "$CREATE_SESS"
 
-SESSION_ID=$(echo "$CREATE_SESS" | jq -r '.paymentSession.paymentSessionId // empty')
-if [[ -n "$SESSION_ID" && "$SESSION_ID" != "null" ]]; then
+SESSION_ID=$(echo "$CREATE_SESS" | jq -r '.paymentSession.paymentSessionId // empty' 2>/dev/null || true)
+SKIP_SESSION=false
+if [[ -z "$SESSION_ID" || "$SESSION_ID" == "null" ]]; then
+    SKIP_SESSION=true
+fi
+
+if [[ "$SKIP_SESSION" != "true" ]]; then
     success "create-payment-session (sessionId: $SESSION_ID)"
     PASSED=$((PASSED+1))
 else
@@ -341,6 +355,9 @@ echo ""
 sep
 info "Test C1: process-payment (SDK)"
 
+if [[ "$SKIP_INSTRUMENT" == "true" || "$SKIP_SESSION" == "true" ]]; then
+    warn "Skipping C1 — need paymentInstrumentId (B1) and paymentSessionId (B4)"
+else
 PAYMENT_INPUT=$(jq -n --arg payTo "$PAY_TO" --arg amount "$PAYMENT_AMOUNT" '{
     "cryptoX402": {
         "version": "2",
@@ -368,15 +385,20 @@ PROCESS_PAY=$(aws bedrock-agentcore process-payment \
     --user-id "$USER_ID" \
     --output json 2>&1) || true
 
-echo "$PROCESS_PAY" | jq . 2>/dev/null || echo "$PROCESS_PAY"
+if echo "$PROCESS_PAY" | jq -e . >/dev/null 2>&1; then
+    echo "$PROCESS_PAY" | jq .
+else
+    echo "$PROCESS_PAY"
+fi
 
-PAY_STATUS=$(echo "$PROCESS_PAY" | jq -r '.status // empty')
+PAY_STATUS=$(echo "$PROCESS_PAY" | jq -r '.status // empty' 2>/dev/null || true)
 if [[ "$PAY_STATUS" == "PROOF_GENERATED" ]]; then
     success "process-payment (status: PROOF_GENERATED)"
     PASSED=$((PASSED+1))
 else
     fail "process-payment (status: $PAY_STATUS)"
     echo "  Response: $PROCESS_PAY"
+fi
 fi
 echo ""
 
@@ -395,6 +417,9 @@ echo ""
 sep
 info "Test D1: get-payment-session (SDK)"
 
+if [[ "$SKIP_SESSION" == "true" ]]; then
+    warn "Skipping D1 — no payment session id from B4"
+else
 GET_SESS=$(aws bedrock-agentcore get-payment-session \
     --region "$REGION" \
     --endpoint-url "$DP_ENDPOINT" \
@@ -403,14 +428,19 @@ GET_SESS=$(aws bedrock-agentcore get-payment-session \
     --user-id "$USER_ID" \
     --output json 2>&1) || true
 
-echo "$GET_SESS" | jq . 2>/dev/null || echo "$GET_SESS"
+if echo "$GET_SESS" | jq -e . >/dev/null 2>&1; then
+    echo "$GET_SESS" | jq .
+else
+    echo "$GET_SESS"
+fi
 
-SESS_ID_CHECK=$(echo "$GET_SESS" | jq -r '.paymentSession.paymentSessionId // empty')
+SESS_ID_CHECK=$(echo "$GET_SESS" | jq -r '.paymentSession.paymentSessionId // empty' 2>/dev/null || true)
 if [[ "$SESS_ID_CHECK" == "$SESSION_ID" ]]; then
     success "get-payment-session"
     PASSED=$((PASSED+1))
 else
     fail "get-payment-session"
+fi
 fi
 echo ""
 

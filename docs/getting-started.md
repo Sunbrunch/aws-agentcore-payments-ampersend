@@ -389,7 +389,7 @@ resp = dp.create_payment_instrument(
     userId="user-123",
     paymentInstrumentType="EMBEDDED_CRYPTO_WALLET",
     paymentInstrumentDetails={
-        "embeddedCryptoWallet": {"network": "ETHEREUM"}
+        "cryptoWallet": {"network": "ETHEREUM"}
     },
     clientToken=str(uuid.uuid4()) + "-" + str(uuid.uuid4())[:8],
 )
@@ -397,10 +397,7 @@ resp = dp.create_payment_instrument(
 instrument = resp["paymentInstrument"]
 instrument_id = instrument["paymentInstrumentId"]
 details = instrument.get("paymentInstrumentDetails") or {}
-wallet_address = (
-    (details.get("embeddedCryptoWallet") or {}).get("walletAddress")
-    or (details.get("cryptoWallet") or {}).get("walletAddress")
-)
+wallet_address = (details.get("cryptoWallet") or {}).get("walletAddress")
 print(f"Instrument ID:  {instrument_id}")
 print(f"Wallet Address: {wallet_address}")
 ```

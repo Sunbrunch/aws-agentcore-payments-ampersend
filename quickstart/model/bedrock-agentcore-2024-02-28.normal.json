@@ -3064,10 +3064,9 @@
     "PaymentInstrumentDetails":{
       "type":"structure",
       "members":{
-        "cryptoWallet":{"shape":"CryptoWallet"},
-        "embeddedCryptoWallet":{"shape":"CryptoWallet"}
+        "cryptoWallet":{"shape":"CryptoWallet"}
       },
-      "documentation":"<p>Details specific to the instrument type</p>",
+      "documentation":"<p>Details specific to the instrument type (use cryptoWallet for EMBEDDED_CRYPTO_WALLET)</p>",
       "union":true
     },
     "PaymentInstrumentId":{
