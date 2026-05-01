@@ -3077,10 +3077,9 @@
     "PaymentInstrumentDetails":{
       "type":"structure",
       "members":{
-        "cryptoWallet":{"shape":"CryptoWallet"},
-        "embeddedCryptoWallet":{"shape":"CryptoWallet"}
+        "cryptoWallet":{"shape":"CryptoWallet"}
       },
-      "documentation":"<p>Details specific to the instrument type; EMBEDDED_CRYPTO_WALLET uses embeddedCryptoWallet</p>",
+      "documentation":"<p>Details specific to the instrument type</p>",
       "union":true
     },
     "PaymentInstrumentId":{
@@ -3103,7 +3102,7 @@
     "PaymentInstrumentType":{
       "type":"string",
       "documentation":"<p>The type of payment instrument</p>",
-      "enum":["CRYPTO_WALLET","EMBEDDED_CRYPTO_WALLET"]
+      "enum":["CRYPTO_WALLET"]
     },
     "PaymentManagerArn":{
       "type":"string",

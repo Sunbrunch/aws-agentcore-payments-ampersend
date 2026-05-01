@@ -222,32 +222,18 @@ echo ""
 sep
 info "Test B1: create-payment-instrument (SDK)"
 
-# Newer API: EMBEDDED_CRYPTO_WALLET + embeddedCryptoWallet.network.
-# Older AWS CLI (local ParamValidation): only cryptoWallet in details — try both.
+# CRYPTO_WALLET: server-managed CDP wallet. No Coinbase delegated signing required.
+# EMBEDDED_CRYPTO_WALLET: requires linkedAccounts with email + Coinbase delegated signing setup.
+# For the demo we use CRYPTO_WALLET — simpler, works with existing connectors.
 CREATE_INST=$(aws bedrock-agentcore create-payment-instrument \
     --region "$REGION" \
     --endpoint-url "$DP_ENDPOINT" \
     --payment-manager-arn "$MANAGER_ARN" \
     --payment-connector-id "$CONNECTOR_ID" \
-    --payment-instrument-type "EMBEDDED_CRYPTO_WALLET" \
-    --payment-instrument-details '{"embeddedCryptoWallet":{"network":"ETHEREUM","linkedAccounts":[]}}' \
+    --payment-instrument-type "CRYPTO_WALLET" \
+    --payment-instrument-details '{"cryptoWallet":{"network":"ETHEREUM"}}' \
     --user-id "$USER_ID" \
     --output json 2>&1) || true
-
-if ! echo "$CREATE_INST" | jq -e '.paymentInstrument.paymentInstrumentId' >/dev/null 2>&1; then
-    if echo "$CREATE_INST" | grep -Eq 'Unknown parameter.*embeddedCryptoWallet|must be one of: cryptoWallet'; then
-        warn "Retrying B1 with cryptoWallet details (older AWS CLI / botocore local schema)"
-        CREATE_INST=$(aws bedrock-agentcore create-payment-instrument \
-            --region "$REGION" \
-            --endpoint-url "$DP_ENDPOINT" \
-            --payment-manager-arn "$MANAGER_ARN" \
-            --payment-connector-id "$CONNECTOR_ID" \
-            --payment-instrument-type "EMBEDDED_CRYPTO_WALLET" \
-            --payment-instrument-details '{"cryptoWallet":{"network":"ETHEREUM"}}' \
-            --user-id "$USER_ID" \
-            --output json 2>&1) || true
-    fi
-fi
 
 if echo "$CREATE_INST" | jq -e . >/dev/null 2>&1; then
     echo "$CREATE_INST" | jq .
@@ -255,16 +241,8 @@ else
     echo "$CREATE_INST"
 fi
 
-if echo "$CREATE_INST" | grep -q 'embeddedCryptoWallet.network is required'; then
-    warn "Service expects embeddedCryptoWallet — upgrade AWS CLI v2 + botocore: pip install -U awscli botocore"
-fi
-
 INSTRUMENT_ID=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentId // empty' 2>/dev/null || true)
-WALLET_ADDR=$(echo "$CREATE_INST" | jq -r '
-  (.paymentInstrument.paymentInstrumentDetails.embeddedCryptoWallet.walletAddress
-   // .paymentInstrument.paymentInstrumentDetails.cryptoWallet.walletAddress
-   // empty)
-' 2>/dev/null || true)
+WALLET_ADDR=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentDetails.cryptoWallet.walletAddress // empty' 2>/dev/null || true)
 
 SKIP_INSTRUMENT=false
 if [[ -z "$INSTRUMENT_ID" || "$INSTRUMENT_ID" == "null" ]]; then
