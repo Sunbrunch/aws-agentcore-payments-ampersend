@@ -451,7 +451,7 @@ Create a time-bound session with spending limits (optional). This is typically d
 resp = dp.create_payment_session(
     paymentManagerArn=manager_arn,
     userId="user-123",
-    expiryTimeInMinutes=300,  # minimum 15, max 480 (field name on current DP API)
+    expiryDuration=300,  # minutes — many boto3 builds use this name; newer APIs may use expiryTimeInMinutes
     limits={
         "maxSpendAmount": {
             "value": "1.0",       # string — $1.00 USD
@@ -469,7 +469,7 @@ print(f"Session ID: {session_id}")
 
 > **Notes:**
 > - `value` must be a string (`"1.0"`), not a number.
-> - Use `expiryTimeInMinutes` for session TTL. Older examples used `expiryDuration`; the live API may require `expiryTimeInMinutes`.
+> - Session TTL: use `expiryTimeInMinutes` if your installed **boto3** model exposes it; otherwise `expiryDuration` (minutes). Match the parameter names in your SDK version to the API in your region.
 > - `currency` is `"USD"` (not `"USDC"`). The service converts USDC to USD for budget enforcement.
 > - `userId` is required for all APIs and isolates each user's content. Use your existing SSO/CRM system to populate this field in production.
 > - The agent receives the `paymentSessionId` and `paymentInstrumentId` but cannot create new sessions or modify the budget.

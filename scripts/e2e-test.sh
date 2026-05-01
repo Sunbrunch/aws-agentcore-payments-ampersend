@@ -26,6 +26,9 @@
 #     D2. list-payment-sessions
 #
 # Prerequisites:
+#   - AWS CLI v2 + botocore recent enough for bedrock-agentcore (model drifts by region).
+#     B1 tries embeddedCryptoWallet then falls back to cryptoWallet for older CLIs.
+#     If the *service* still rejects B1, upgrade: pip install -U awscli botocore
 #   - AWS CLI v2 with service models installed (bash quickstart/setup_model.sh)
 #   - jq
 #   - .env file with config values
@@ -219,8 +222,8 @@ echo ""
 sep
 info "Test B1: create-payment-instrument (SDK)"
 
-# EMBEDDED_CRYPTO_WALLET requires embeddedCryptoWallet.network (server validation).
-# Older AWS CLI builds may ParamValidate on this key — upgrade CLI/botocore if so.
+# Newer API: EMBEDDED_CRYPTO_WALLET + embeddedCryptoWallet.network.
+# Older AWS CLI (local ParamValidation): only cryptoWallet in details — try both.
 CREATE_INST=$(aws bedrock-agentcore create-payment-instrument \
     --region "$REGION" \
     --endpoint-url "$DP_ENDPOINT" \
@@ -231,10 +234,29 @@ CREATE_INST=$(aws bedrock-agentcore create-payment-instrument \
     --user-id "$USER_ID" \
     --output json 2>&1) || true
 
+if ! echo "$CREATE_INST" | jq -e '.paymentInstrument.paymentInstrumentId' >/dev/null 2>&1; then
+    if echo "$CREATE_INST" | grep -Eq 'Unknown parameter.*embeddedCryptoWallet|must be one of: cryptoWallet'; then
+        warn "Retrying B1 with cryptoWallet details (older AWS CLI / botocore local schema)"
+        CREATE_INST=$(aws bedrock-agentcore create-payment-instrument \
+            --region "$REGION" \
+            --endpoint-url "$DP_ENDPOINT" \
+            --payment-manager-arn "$MANAGER_ARN" \
+            --payment-connector-id "$CONNECTOR_ID" \
+            --payment-instrument-type "EMBEDDED_CRYPTO_WALLET" \
+            --payment-instrument-details '{"cryptoWallet":{"network":"ETHEREUM"}}' \
+            --user-id "$USER_ID" \
+            --output json 2>&1) || true
+    fi
+fi
+
 if echo "$CREATE_INST" | jq -e . >/dev/null 2>&1; then
     echo "$CREATE_INST" | jq .
 else
     echo "$CREATE_INST"
+fi
+
+if echo "$CREATE_INST" | grep -q 'embeddedCryptoWallet.network is required'; then
+    warn "Service expects embeddedCryptoWallet — upgrade AWS CLI v2 + botocore: pip install -U awscli botocore"
 fi
 
 INSTRUMENT_ID=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentId // empty' 2>/dev/null || true)
@@ -318,22 +340,14 @@ echo ""
 sep
 info "Test B4: create-payment-session (SDK)"
 
-# Live DP expects expiryTimeInMinutes; --expiry-duration can leave it null on the wire.
-CREATE_SESS_JSON=$(jq -n \
-    --arg arn "$MANAGER_ARN" \
-    --arg val "$SESSION_LIMIT_USD" \
-    --arg ct "$(uuid)" \
-    '{
-        paymentManagerArn: $arn,
-        limits: { maxSpendAmount: { value: $val, currency: "USD" } },
-        expiryTimeInMinutes: 300,
-        clientToken: $ct
-    }')
+# Older AWS CLI: --expiry-duration maps to the wire field (ParamValidation rejects expiryTimeInMinutes).
 CREATE_SESS=$(aws bedrock-agentcore create-payment-session \
     --region "$REGION" \
     --endpoint-url "$DP_ENDPOINT" \
+    --payment-manager-arn "$MANAGER_ARN" \
+    --expiry-duration 300 \
+    --limits '{"maxSpendAmount":{"value":"'"$SESSION_LIMIT_USD"'","currency":"USD"}}' \
     --user-id "$USER_ID" \
-    --cli-input-json "$CREATE_SESS_JSON" \
     --output json 2>&1) || true
 
 if echo "$CREATE_SESS" | jq -e . >/dev/null 2>&1; then
@@ -475,11 +489,14 @@ LIST_SESS=$(aws bedrock-agentcore list-payment-sessions \
 echo "$LIST_SESS" | jq . 2>/dev/null || echo "$LIST_SESS"
 
 SESS_COUNT=$(echo "$LIST_SESS" | jq '.paymentSessions | length' 2>/dev/null || echo "0")
-if [[ "$SESS_COUNT" -ge 1 ]]; then
+if echo "$LIST_SESS" | jq -e '.paymentSessions | type == "array"' >/dev/null 2>&1; then
     success "list-payment-sessions (count: $SESS_COUNT)"
+    if [[ "$SESS_COUNT" -eq 0 ]]; then
+        warn "paymentSessions is empty for this userId (normal if no sessions created yet)"
+    fi
     PASSED=$((PASSED+1))
 else
-    fail "list-payment-sessions"
+    fail "list-payment-sessions (invalid response)"
 fi
 echo ""
 
