@@ -3064,7 +3064,8 @@
     "PaymentInstrumentDetails":{
       "type":"structure",
       "members":{
-        "cryptoWallet":{"shape":"CryptoWallet"}
+        "cryptoWallet":{"shape":"CryptoWallet"},
+        "embeddedCryptoWallet":{"shape":"CryptoWallet"}
       },
       "documentation":"<p>Details specific to the instrument type</p>",
       "union":true
@@ -3089,7 +3090,7 @@
     "PaymentInstrumentType":{
       "type":"string",
       "documentation":"<p>The type of payment instrument</p>",
-      "enum":["CRYPTO_WALLET"]
+      "enum":["CRYPTO_WALLET","EMBEDDED_CRYPTO_WALLET"]
     },
     "PaymentManagerArn":{
       "type":"string",

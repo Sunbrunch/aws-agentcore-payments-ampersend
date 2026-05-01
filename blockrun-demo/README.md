@@ -341,6 +341,7 @@ On exceptions (e.g. `ReadTimeout`), the error block includes the full traceback 
 | `AccessDenied` on `ProcessPayment` | You didn't assume `ProcessPaymentRole` first |
 | `TokenRetrievalError: Token has expired` | Re-authenticate: `aws sso login --profile <your-profile>` |
 | `Payment session not found` | Re-run `scripts/e2e-test.sh` to create a fresh session and instrument, then update `.env` |
+| `CreatePaymentInstrument` … `CRYPTO_WALLET` / enum only `EMBEDDED_CRYPTO_WALLET` | Use `paymentInstrumentType=EMBEDDED_CRYPTO_WALLET` and `embeddedCryptoWallet` in details (see `scripts/e2e-test.sh`). Upgrade AWS CLI / botocore if your local model still shows only `CRYPTO_WALLET`. |
 | `[after] (skipped — set MANAGEMENT_ROLE_ARN …)` | Add `MANAGEMENT_ROLE_ARN` to `.env` to see the budget readout |
 | `[after] (GetPaymentSession failed: AccessDenied)` | Your `MANAGEMENT_ROLE_ARN` doesn't have `bedrock-agentcore:GetPaymentSession` — check `quickstart/setup_roles.sh` |
 | Buyer routes everything to `fast` | The catalog heuristic looks at keywords and length; use `--tier balanced|premium` to force |

@@ -219,20 +219,30 @@ echo ""
 sep
 info "Test B1: create-payment-instrument (SDK)"
 
+# AgentCore DP now expects EMBEDDED_CRYPTO_WALLET (CRYPTO_WALLET removed).
+# Details use embeddedCryptoWallet; network ETHEREUM = all supported EVM chains per AWS.
 CREATE_INST=$(aws bedrock-agentcore create-payment-instrument \
     --region "$REGION" \
     --endpoint-url "$DP_ENDPOINT" \
     --payment-manager-arn "$MANAGER_ARN" \
     --payment-connector-id "$CONNECTOR_ID" \
-    --payment-instrument-type "CRYPTO_WALLET" \
-    --payment-instrument-details '{"cryptoWallet":{"network":"ETHEREUM"}}' \
+    --payment-instrument-type "EMBEDDED_CRYPTO_WALLET" \
+    --payment-instrument-details '{"embeddedCryptoWallet":{"network":"ETHEREUM"}}' \
     --user-id "$USER_ID" \
     --output json 2>&1) || true
 
-echo "$CREATE_INST" | jq . 2>/dev/null || echo "$CREATE_INST"
+if echo "$CREATE_INST" | jq -e . >/dev/null 2>&1; then
+    echo "$CREATE_INST" | jq .
+else
+    echo "$CREATE_INST"
+fi
 
-INSTRUMENT_ID=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentId // empty')
-WALLET_ADDR=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentDetails.cryptoWallet.walletAddress // empty')
+INSTRUMENT_ID=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentId // empty' 2>/dev/null || true)
+WALLET_ADDR=$(echo "$CREATE_INST" | jq -r '
+  (.paymentInstrument.paymentInstrumentDetails.embeddedCryptoWallet.walletAddress
+   // .paymentInstrument.paymentInstrumentDetails.cryptoWallet.walletAddress
+   // empty)
+' 2>/dev/null || true)
 
 if [[ -n "$INSTRUMENT_ID" && "$INSTRUMENT_ID" != "null" ]]; then
     success "create-payment-instrument (instrumentId: $INSTRUMENT_ID)"
