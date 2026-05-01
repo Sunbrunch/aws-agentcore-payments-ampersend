@@ -230,7 +230,7 @@ CREATE_INST=$(aws bedrock-agentcore create-payment-instrument \
     --payment-manager-arn "$MANAGER_ARN" \
     --payment-connector-id "$CONNECTOR_ID" \
     --payment-instrument-type "EMBEDDED_CRYPTO_WALLET" \
-    --payment-instrument-details '{"embeddedCryptoWallet":{"network":"ETHEREUM"}}' \
+    --payment-instrument-details '{"embeddedCryptoWallet":{"network":"ETHEREUM","linkedAccounts":[]}}' \
     --user-id "$USER_ID" \
     --output json 2>&1) || true
 
@@ -340,15 +340,29 @@ echo ""
 sep
 info "Test B4: create-payment-session (SDK)"
 
-# Older AWS CLI: --expiry-duration maps to the wire field (ParamValidation rejects expiryTimeInMinutes).
+# Updated model: --expiry-time-in-minutes; fallback to --expiry-duration for older CLI.
 CREATE_SESS=$(aws bedrock-agentcore create-payment-session \
     --region "$REGION" \
     --endpoint-url "$DP_ENDPOINT" \
     --payment-manager-arn "$MANAGER_ARN" \
-    --expiry-duration 300 \
+    --expiry-time-in-minutes 300 \
     --limits '{"maxSpendAmount":{"value":"'"$SESSION_LIMIT_USD"'","currency":"USD"}}' \
     --user-id "$USER_ID" \
     --output json 2>&1) || true
+
+if ! echo "$CREATE_SESS" | jq -e '.paymentSession.paymentSessionId' >/dev/null 2>&1; then
+    if echo "$CREATE_SESS" | grep -Eq 'expiry-duration|Unknown.*expiryTimeInMinutes'; then
+        warn "Retrying B4 with --expiry-duration (older CLI model)"
+        CREATE_SESS=$(aws bedrock-agentcore create-payment-session \
+            --region "$REGION" \
+            --endpoint-url "$DP_ENDPOINT" \
+            --payment-manager-arn "$MANAGER_ARN" \
+            --expiry-duration 300 \
+            --limits '{"maxSpendAmount":{"value":"'"$SESSION_LIMIT_USD"'","currency":"USD"}}' \
+            --user-id "$USER_ID" \
+            --output json 2>&1) || true
+    fi
+fi
 
 if echo "$CREATE_SESS" | jq -e . >/dev/null 2>&1; then
     echo "$CREATE_SESS" | jq .

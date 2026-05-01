@@ -1481,9 +1481,21 @@
       "required":["network"],
       "members":{
         "network":{"shape":"CryptoWalletNetwork"},
-        "walletAddress":{"shape":"String"}
+        "walletAddress":{"shape":"String"},
+        "linkedAccounts":{"shape":"LinkedAccountList"}
       },
       "documentation":"<p>Crypto wallet instrument details</p>"
+    },
+    "LinkedAccountList":{
+      "type":"list",
+      "member":{"shape":"LinkedAccount"}
+    },
+    "LinkedAccount":{
+      "type":"structure",
+      "members":{
+        "accountId":{"shape":"String"},
+        "provider":{"shape":"String"}
+      }
     },
     "CryptoWalletNetwork":{
       "type":"string",
