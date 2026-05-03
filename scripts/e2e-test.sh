@@ -218,64 +218,107 @@ assume_role "$MANAGEMENT_ROLE_ARN" "e2e-mgmt-$(date +%s)"
 success "Assumed ManagementRole"
 echo ""
 
-# ── Test B1: create-payment-instrument ───────────────────────────
+# ── Test B1: create-payment-instrument (reuse or create) ─────────
 sep
 info "Test B1: create-payment-instrument (SDK)"
 
-# EMBEDDED_CRYPTO_WALLET: requires linkedAccounts with email + Coinbase delegated signing.
-# CRYPTO_WALLET is deprecated in production — only EMBEDDED_CRYPTO_WALLET is accepted.
-if [[ -z "$LINKED_ACCOUNT_EMAIL" ]]; then
-    warn "LINKED_ACCOUNT_EMAIL not set — using empty linkedAccounts (may fail)"
-    INST_DETAILS='{"embeddedCryptoWallet":{"network":"ETHEREUM","linkedAccounts":[]}}'
-else
-    INST_DETAILS=$(jq -n --arg email "$LINKED_ACCOUNT_EMAIL" \
-        '{"embeddedCryptoWallet":{"network":"ETHEREUM","linkedAccounts":[{"email":{"emailAddress":$email}}]}}')
-fi
+# Reuse an existing ACTIVE EMBEDDED_CRYPTO_WALLET instrument if one exists.
+INSTRUMENT_ID=""
+WALLET_ADDR=""
+SKIP_INSTRUMENT=false
 
-CREATE_INST=$(aws bedrock-agentcore create-payment-instrument \
+EXISTING_INST=$(aws bedrock-agentcore list-payment-instruments \
     --region "$REGION" \
     --endpoint-url "$DP_ENDPOINT" \
     --payment-manager-arn "$MANAGER_ARN" \
     --payment-connector-id "$CONNECTOR_ID" \
-    --payment-instrument-type "EMBEDDED_CRYPTO_WALLET" \
-    --payment-instrument-details "$INST_DETAILS" \
     --user-id "$USER_ID" \
-    --output json 2>&1) || true
+    --output json 2>/dev/null) || true
 
-if echo "$CREATE_INST" | jq -e . >/dev/null 2>&1; then
-    echo "$CREATE_INST" | jq .
-else
-    echo "$CREATE_INST"
-fi
+INSTRUMENT_ID=$(echo "$EXISTING_INST" | jq -r '
+    [.paymentInstruments[] |
+     select(.paymentInstrumentType == "EMBEDDED_CRYPTO_WALLET" and .status == "ACTIVE")] |
+    sort_by(.createdAt) | last | .paymentInstrumentId // empty' 2>/dev/null || true)
 
-INSTRUMENT_ID=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentId // empty' 2>/dev/null || true)
-WALLET_ADDR=$(echo "$CREATE_INST" | jq -r '
-    .paymentInstrument.paymentInstrumentDetails.embeddedCryptoWallet.walletAddress //
-    .paymentInstrument.paymentInstrumentDetails.cryptoWallet.walletAddress //
-    empty' 2>/dev/null || true)
+if [[ -n "$INSTRUMENT_ID" && "$INSTRUMENT_ID" != "null" ]]; then
+    info "Reusing existing ACTIVE EMBEDDED_CRYPTO_WALLET instrument: $INSTRUMENT_ID"
 
-SKIP_INSTRUMENT=false
-if [[ -z "$INSTRUMENT_ID" || "$INSTRUMENT_ID" == "null" ]]; then
-    SKIP_INSTRUMENT=true
-fi
+    GET_REUSED=$(aws bedrock-agentcore get-payment-instrument \
+        --region "$REGION" \
+        --endpoint-url "$DP_ENDPOINT" \
+        --payment-manager-arn "$MANAGER_ARN" \
+        --payment-connector-id "$CONNECTOR_ID" \
+        --payment-instrument-id "$INSTRUMENT_ID" \
+        --user-id "$USER_ID" \
+        --output json 2>&1) || true
 
-REDIRECT_URL=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.redirectUrl // empty' 2>/dev/null || true)
-
-if [[ "$SKIP_INSTRUMENT" != "true" ]]; then
-    success "create-payment-instrument (instrumentId: $INSTRUMENT_ID)"
-    echo "  walletAddress: $WALLET_ADDR"
-    if [[ -n "$REDIRECT_URL" && "$REDIRECT_URL" != "null" ]]; then
-        echo ""
-        info "  🔗 WalletHub (end-user delegation + funding):"
-        echo "  $REDIRECT_URL"
-        echo ""
-        warn "Open this URL in a browser to grant delegated signing and fund the wallet."
-        warn "ProcessPayment (C1) will fail until the end user completes this step."
+    if echo "$GET_REUSED" | jq -e . >/dev/null 2>&1; then
+        echo "$GET_REUSED" | jq .
     fi
+
+    WALLET_ADDR=$(echo "$GET_REUSED" | jq -r '
+        .paymentInstrument.paymentInstrumentDetails.embeddedCryptoWallet.walletAddress //
+        .paymentInstrument.paymentInstrumentDetails.cryptoWallet.walletAddress //
+        empty' 2>/dev/null || true)
+
+    success "create-payment-instrument (reused instrumentId: $INSTRUMENT_ID)"
+    echo "  walletAddress: $WALLET_ADDR"
     PASSED=$((PASSED+1))
 else
-    fail "create-payment-instrument"
-    echo "  Response: $CREATE_INST"
+    info "No existing ACTIVE EMBEDDED_CRYPTO_WALLET found — creating new one"
+
+    if [[ -z "$LINKED_ACCOUNT_EMAIL" ]]; then
+        warn "LINKED_ACCOUNT_EMAIL not set — using empty linkedAccounts (may fail)"
+        INST_DETAILS='{"embeddedCryptoWallet":{"network":"ETHEREUM","linkedAccounts":[]}}'
+    else
+        INST_DETAILS=$(jq -n --arg email "$LINKED_ACCOUNT_EMAIL" \
+            '{"embeddedCryptoWallet":{"network":"ETHEREUM","linkedAccounts":[{"email":{"emailAddress":$email}}]}}')
+    fi
+
+    CREATE_INST=$(aws bedrock-agentcore create-payment-instrument \
+        --region "$REGION" \
+        --endpoint-url "$DP_ENDPOINT" \
+        --payment-manager-arn "$MANAGER_ARN" \
+        --payment-connector-id "$CONNECTOR_ID" \
+        --payment-instrument-type "EMBEDDED_CRYPTO_WALLET" \
+        --payment-instrument-details "$INST_DETAILS" \
+        --user-id "$USER_ID" \
+        --output json 2>&1) || true
+
+    if echo "$CREATE_INST" | jq -e . >/dev/null 2>&1; then
+        echo "$CREATE_INST" | jq .
+    else
+        echo "$CREATE_INST"
+    fi
+
+    INSTRUMENT_ID=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.paymentInstrumentId // empty' 2>/dev/null || true)
+    WALLET_ADDR=$(echo "$CREATE_INST" | jq -r '
+        .paymentInstrument.paymentInstrumentDetails.embeddedCryptoWallet.walletAddress //
+        .paymentInstrument.paymentInstrumentDetails.cryptoWallet.walletAddress //
+        empty' 2>/dev/null || true)
+
+    if [[ -z "$INSTRUMENT_ID" || "$INSTRUMENT_ID" == "null" ]]; then
+        SKIP_INSTRUMENT=true
+    fi
+
+    REDIRECT_URL=$(echo "$CREATE_INST" | jq -r '.paymentInstrument.redirectUrl // empty' 2>/dev/null || true)
+
+    if [[ "$SKIP_INSTRUMENT" != "true" ]]; then
+        success "create-payment-instrument (instrumentId: $INSTRUMENT_ID)"
+        echo "  walletAddress: $WALLET_ADDR"
+        if [[ -n "$REDIRECT_URL" && "$REDIRECT_URL" != "null" ]]; then
+            echo ""
+            info "  🔗 WalletHub (end-user delegation + funding):"
+            echo "  $REDIRECT_URL"
+            echo ""
+            warn "Open this URL in a browser to grant delegated signing and fund the wallet."
+            warn "ProcessPayment (C1) will fail until the end user completes this step."
+        fi
+        PASSED=$((PASSED+1))
+    else
+        fail "create-payment-instrument"
+        echo "  Response: $CREATE_INST"
+    fi
 fi
 echo ""
 
@@ -417,6 +460,13 @@ PAYMENT_INPUT=$(jq -n --arg payTo "$PAY_TO" --arg amount "$PAYMENT_AMOUNT" '{
     }
 }')
 
+echo "  instrumentId: $INSTRUMENT_ID"
+echo "  sessionId:    $SESSION_ID"
+echo "  paymentInput:"
+echo "$PAYMENT_INPUT" | jq .
+echo ""
+
+C1_TMPFILE=$(mktemp)
 PROCESS_PAY=$(aws bedrock-agentcore process-payment \
     --region "$REGION" \
     --endpoint-url "$DP_ENDPOINT" \
@@ -426,12 +476,20 @@ PROCESS_PAY=$(aws bedrock-agentcore process-payment \
     --payment-type "CRYPTO_X402" \
     --payment-input "$PAYMENT_INPUT" \
     --user-id "$USER_ID" \
-    --output json 2>&1) || true
+    --output json 2>"$C1_TMPFILE") || true
+
+C1_STDERR=$(<"$C1_TMPFILE")
+rm -f "$C1_TMPFILE"
 
 if echo "$PROCESS_PAY" | jq -e . >/dev/null 2>&1; then
     echo "$PROCESS_PAY" | jq .
-else
+elif [[ -n "$PROCESS_PAY" ]]; then
     echo "$PROCESS_PAY"
+fi
+
+if [[ -n "$C1_STDERR" ]]; then
+    echo ""
+    echo "$C1_STDERR"
 fi
 
 PAY_STATUS=$(echo "$PROCESS_PAY" | jq -r '.status // empty' 2>/dev/null || true)
@@ -440,7 +498,6 @@ if [[ "$PAY_STATUS" == "PROOF_GENERATED" ]]; then
     PASSED=$((PASSED+1))
 else
     fail "process-payment (status: $PAY_STATUS)"
-    echo "  Response: $PROCESS_PAY"
 fi
 fi
 echo ""
