@@ -604,6 +604,7 @@ async def health(request: Request) -> JSONResponse:
                 for t in CATALOG
             ],
             "skip_verify": SKIP_VERIFY,
+            "mock_upstream_on_failure": MOCK_ON_UPSTREAM_FAILURE,
         }
     )
 
@@ -656,6 +657,14 @@ if __name__ == "__main__":
         print("  !!                                                      !!")
         print("  !!  This is LOCAL DEVELOPMENT ONLY. Do NOT demo or      !!")
         print("  !!  deploy with this flag set.                          !!")
+        print("  " + "!" * 56)
+        print()
+    elif MOCK_ON_UPSTREAM_FAILURE:
+        print()
+        print("  " + "!" * 56)
+        print("  !!  WARNING: MOCK_ON_UPSTREAM_FAILURE=true — BlockRun !!")
+        print("  !!  errors return a SYNTHETIC LLM body (not BlockRun).  !!")
+        print("  !!  buyer.py refuses this unless ALLOW_SELLER_MOCKS.    !!")
         print("  " + "!" * 56)
         print()
     else:

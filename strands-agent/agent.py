@@ -83,18 +83,17 @@ def _call_process_payment(x402_payload: dict, x402_version: int = 1) -> dict:
     """Internal helper: call ProcessPayment API via boto3 SDK.
 
     The x402_payload is the merchant's payment requirement object (typically
-    accepts[0] from the 402 response). For x402 v1 the full payload is passed
-    through as-is (including resource, description, outputSchema, etc.).
-    For x402 v2 we strip metadata fields that aren't part of the payment.
+    accepts[0] from the 402 response). For v1 it is passed through as-is. For
+    v2, metadata keys that belong on PaymentPayload.resource (resource,
+    description, mimeType, outputSchema) are omitted from the DP payload so
+    the signed proof matches the facilitator and the PAYMENT-SIGNATURE body.
 
     The ``version`` field in the ProcessPayment request matches the x402
     protocol version: "1" for v1, "2" for v2.
     """
     payload = dict(x402_payload)
-
-    # v2: strip non-payment metadata (v1 keeps the full merchant payload)
     if x402_version >= 2:
-        for key in ["description", "mimeType", "resource", "outputSchema"]:
+        for key in ("description", "mimeType", "resource", "outputSchema"):
             payload.pop(key, None)
 
     response = _dp_client.process_payment(
@@ -125,10 +124,6 @@ def process_payment(x402_payload: dict, x402_version: int = 1) -> dict:
     Pass the ENTIRE x402 payment requirement object from the merchant as-is.
     This is typically accepts[0] from the HTTP 402 response. Do NOT parse
     individual fields — the API accepts the raw merchant payload directly.
-
-    The x402_version determines how the payload is handled:
-    - v1: full merchant payload passed through (including resource, description, etc.)
-    - v2: metadata fields stripped, only payment fields kept
 
     Args:
         x402_payload: The raw x402 payment requirement from the merchant.
@@ -304,12 +299,24 @@ def http_request_with_payment_header(
     req_headers = headers or {}
 
     if x402_version >= 2 and x402_payload:
+        # x402 v2 PaymentPayload: ResourceInfo on ``resource``; ``accepted`` without
+        # resource/description/mimeType/outputSchema (see coinbase/x402 spec).
+        resource_path = x402_payload.get("resource", "")
+        accepted = {
+            k: v
+            for k, v in x402_payload.items()
+            if k not in ("description", "mimeType", "outputSchema", "resource")
+        }
         payment_signature = {
             "x402Version": 2,
-            "resource": x402_payload.get("resource", ""),
-            "accepted": x402_payload,
+            "resource": {
+                "url": resource_path,
+                "description": x402_payload.get("description", ""),
+                "mimeType": x402_payload.get("mimeType", "application/json"),
+            },
+            "accepted": accepted,
             "payload": proof.get("payload", proof),
-            "extension": x402_payload.get("resource", ""),
+            "extensions": {},
         }
         encoded = b64.b64encode(json.dumps(payment_signature).encode()).decode()
         req_headers["PAYMENT-SIGNATURE"] = encoded
@@ -510,12 +517,22 @@ def call_bazaar_tool(tool_name: str, parameters: dict = None) -> dict:
         # Construct proper x402 header with top-level protocol fields
         crypto_output = pay_result["paymentOutput"]["cryptoX402"]
         if x402_version >= 2:
+            resource_path = x402_payload.get("resource", "")
+            accepted = {
+                k: v
+                for k, v in x402_payload.items()
+                if k not in ("description", "mimeType", "outputSchema", "resource")
+            }
             payment_header_value = {
                 "x402Version": 2,
-                "resource": x402_payload.get("resource", ""),
-                "accepted": x402_payload,
+                "resource": {
+                    "url": resource_path,
+                    "description": x402_payload.get("description", ""),
+                    "mimeType": x402_payload.get("mimeType", "application/json"),
+                },
+                "accepted": accepted,
                 "payload": crypto_output.get("payload", crypto_output),
-                "extension": x402_payload.get("resource", ""),
+                "extensions": {},
             }
             header_name = "PAYMENT-SIGNATURE"
         else:

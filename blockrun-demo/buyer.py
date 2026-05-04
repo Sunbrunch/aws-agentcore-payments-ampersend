@@ -14,6 +14,8 @@ backend would do that step and push the number back to the UI.
   • On HTTP 402, passes the merchant **accepts[0]** payload to **process_payment**
     as **cryptoX402** (v1 or v2), then retries the HTTP request with **X-PAYMENT**
     or **PAYMENT-SIGNATURE**.
+  • By default, refuses to run if the seller has **SKIP_VERIFY** or
+    **MOCK_ON_UPSTREAM_FAILURE** (set **ALLOW_SELLER_MOCKS=true** to override).
   • After a successful LLM response, the **buyer** (this script — not the seller)
     calls **GetPaymentSession** via **ManagementRole** (if `MANAGEMENT_ROLE_ARN`
     is set) and prints budget / spent / remaining so the guardrails story is
@@ -96,6 +98,91 @@ def _derive_catalog_url(chat_url: str) -> str:
 
 
 CATALOG_URL = _derive_catalog_url(SELLER_URL)
+
+
+def _derive_health_url(chat_url: str) -> str:
+    """Derive GET /health URL from the chat completions URL."""
+    override = os.environ.get("SELLER_HEALTH_URL")
+    if override:
+        return override
+    if "/v1/" in chat_url:
+        base = chat_url.split("/v1/", 1)[0]
+        return f"{base}/health"
+    return chat_url.rsplit("/", 1)[0] + "/health"
+
+
+HEALTH_URL = _derive_health_url(SELLER_URL)
+
+# Buyer refuses mock/off-chain verification unless explicitly allowed.
+_ALLOW_SELLER_MOCKS = os.environ.get("ALLOW_SELLER_MOCKS", "false").lower() == "true"
+
+
+def _assert_seller_onchain_real() -> None:
+    """Abort if the seller is not doing real facilitator verification or can mock LLM."""
+    if _ALLOW_SELLER_MOCKS:
+        return
+    try:
+        resp = requests.get(HEALTH_URL, timeout=5)
+        resp.raise_for_status()
+        h = resp.json()
+    except Exception as e:
+        print(
+            f"\nRefusing to run: could not GET seller health ({HEALTH_URL}): {e}\n"
+            "Start seller.py first, or set SELLER_HEALTH_URL / SELLER_URL.\n"
+            "To skip this check (local only): ALLOW_SELLER_MOCKS=true",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from e
+
+    if h.get("skip_verify"):
+        print(
+            "\nRefusing to run: seller has SKIP_VERIFY=true (no on-chain settlement).\n"
+            "Unset SKIP_VERIFY in the seller environment and restart seller.py.\n"
+            "To bypass: ALLOW_SELLER_MOCKS=true",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    if h.get("mock_upstream_on_failure"):
+        print(
+            "\nRefusing to run: seller has MOCK_ON_UPSTREAM_FAILURE=true "
+            "(synthetic LLM on upstream errors).\n"
+            "Unset MOCK_ON_UPSTREAM_FAILURE and restart seller.py.\n"
+            "To bypass: ALLOW_SELLER_MOCKS=true",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
+def _assert_chat_response_not_mock(result: dict) -> None:
+    """Abort if the seller returned the synthetic mock completion."""
+    if _ALLOW_SELLER_MOCKS:
+        return
+    headers = {k.lower(): v for k, v in result.get("headers", {}).items()}
+    if headers.get("x-mock", "").lower() == "true":
+        print(
+            "\nRefusing to treat as success: seller returned X-Mock: true "
+            "(MOCK_ON_UPSTREAM_FAILURE synthetic body).\n",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    try:
+        data = json.loads(result.get("body") or "{}")
+    except json.JSONDecodeError:
+        return
+    if data.get("x_mock") is True:
+        print(
+            "\nRefusing to treat as success: response body has x_mock: true.\n",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    if isinstance(data.get("choices"), list) and data["choices"]:
+        msg = (data["choices"][0].get("message") or {}).get("content") or ""
+        if isinstance(msg, str) and msg.startswith("[Mock response"):
+            print(
+                "\nRefusing to treat as success: mock completion body detected.\n",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
 
 
 # ── Preset on-brand prompts ──────────────────────────────────────
@@ -339,10 +426,19 @@ def extract_x402_requirements(response: dict) -> tuple[dict, int]:
 def agentcore_process_payment(
     dp_client, x402_payload: dict, x402_version: int
 ) -> dict:
-    """Call AgentCore ProcessPayment to generate a payment proof."""
+    """Call AgentCore ProcessPayment to generate a payment proof.
+
+    For x402 **v2**, the CDP facilitator's verify/settle path matches Coinbase's
+    PaymentPayload shape: payment requirements on ``accepted`` omit
+    ``resource`` / ``description`` / ``mimeType`` / ``outputSchema`` (those
+    belong on PaymentPayload.``resource`` as ResourceInfo). We send that same
+    canonical subset so the EIP-3009 proof matches ``PAYMENT-SIGNATURE``.
+
+    For **v1**, the full merchant ``accepts[0]`` is passed through.
+    """
     payload = dict(x402_payload)
     if x402_version >= 2:
-        for key in ["description", "mimeType", "resource", "outputSchema"]:
+        for key in ("description", "mimeType", "resource", "outputSchema"):
             payload.pop(key, None)
 
     return dp_client.process_payment(
@@ -375,18 +471,27 @@ def build_payment_header(
 ) -> tuple[str, str]:
     """Build the x402 payment header (base64-encoded) for the retry request."""
     if x402_version >= 2:
-        accepted = {k: v for k, v in x402_payload.items()
-                    if k not in ("description", "mimeType", "outputSchema", "resource")}
+        # x402 v2 PaymentPayload (coinbase/x402 spec): ``resource`` is ResourceInfo
+        # {url, description, mimeType}; ``accepted`` is scheme fields only (no
+        # duplicate resource / description / mimeType / outputSchema on accepted).
+        # ``extensions`` object is required by the schema (often {}).
+        # ProcessPayment still receives the full merchant accepts[0] separately;
+        # this header shape is what the CDP facilitator + seller /settle expect.
         resource_path = x402_payload.get("resource", "")
+        accepted = {
+            k: v
+            for k, v in x402_payload.items()
+            if k not in ("description", "mimeType", "outputSchema", "resource")
+        }
         value = {
             "x402Version": 2,
-            "accepted": accepted,
-            "payload": crypto_output.get("payload", crypto_output),
             "resource": {
                 "url": resource_path,
                 "description": x402_payload.get("description", ""),
                 "mimeType": x402_payload.get("mimeType", "application/json"),
             },
+            "accepted": accepted,
+            "payload": crypto_output.get("payload", crypto_output),
             "extensions": {},
         }
         header_name = "PAYMENT-SIGNATURE"
@@ -458,6 +563,9 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
     preview = prompt if len(prompt) <= 80 else prompt[:77] + "..."
     print(f"  Prompt : {preview}")
     print("=" * 60)
+
+    _assert_seller_onchain_real()
+    print(f"\n[0a] Seller health OK (on-chain verify, no upstream mock): GET {HEALTH_URL}")
 
     # ── [0] Assume ProcessPaymentRole ────────────────────────────
     print("\n[0] Assuming AgentCore ProcessPaymentRole...")
@@ -593,6 +701,7 @@ def run_demo(prompt: str, tier_override: str | None = None) -> None:
     print(f"    HTTP {result['status_code']}")
 
     if result["status_code"] == 200:
+        _assert_chat_response_not_mock(result)
         _print_response(result["body"])
         # ── [5] Post-payment budget readout (buyer terminal — not seller) ──
         print(
