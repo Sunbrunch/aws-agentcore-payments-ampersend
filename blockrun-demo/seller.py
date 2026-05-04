@@ -66,6 +66,20 @@ USDC_ASSET = (
     else "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"  # Base Mainnet USDC
 )
 
+# EIP-712 domain `name` field for the stablecoin contract.
+# CRITICAL: This MUST match the on-chain `name()` of the asset, otherwise the
+# signature recovered from the EIP-3009 authorization will not match `from`
+# and `transferWithAuthorization` will revert at the facilitator's eth_call
+# simulation ("execution reverted" / "unable to estimate gas").
+#
+#   Base mainnet USDC (0x8335...2913): name() = "USD Coin"   (hex: 55534420436f696e)
+#   Base Sepolia USDC (0x036C...CF7e): name() = "USDC"       (hex: 55534443)
+#
+# Mirrors x402 reference impl `defaultAssets.ts`:
+#   https://github.com/coinbase/x402/blob/main/typescript/packages/mechanisms/evm/src/shared/defaultAssets.ts
+USDC_NAME = "USDC" if _is_base_sepolia(NETWORK) else "USD Coin"
+USDC_VERSION = "2"
+
 # CDP facilitator (production): POST {FACILITATOR_URL}/settle
 # Requires CDP_API_KEY_ID + CDP_API_KEY_SECRET for JWT auth.
 # Fallback: x402.org (testnet only, no auth required).
@@ -84,19 +98,19 @@ MOCK_ON_UPSTREAM_FAILURE = os.environ.get("MOCK_ON_UPSTREAM_FAILURE", "false").l
 DEFAULT_CATALOG = [
     {
         "id": "fast",
-        "model": "openai/gpt-oss-20b",
+        "model": "claude-haiku-4.5",
         "price_micro_usdc": 2000,   # $0.002
         "description": "Fast, cheap. Good for short answers, quick summaries, classification.",
     },
     {
         "id": "balanced",
-        "model": "openai/gpt-oss-120b",
+        "model": "gpt-5-mini",
         "price_micro_usdc": 3000,   # $0.003
         "description": "Balanced quality. Good for multi-paragraph analysis, governance summaries.",
     },
     {
         "id": "premium",
-        "model": "deepseek/deepseek-v3",
+        "model": "claude-sonnet-4.6",
         "price_micro_usdc": 8000,   # $0.008
         "description": "Premium reasoning. Good for smart-contract audits, deep technical review.",
     },
@@ -197,8 +211,8 @@ def _payment_requirements(resource: str, tier: dict) -> dict:
                 "payTo": SELLER_ADDRESS,
                 "maxTimeoutSeconds": 30,
                 "extra": {
-                    "name": "USDC",
-                    "version": "2",
+                    "name": USDC_NAME,
+                    "version": USDC_VERSION,
                     "assetTransferMethod": "eip3009",
                 },
                 "resource": resource,
@@ -314,7 +328,18 @@ async def _settle_payment(proof: dict, requirements: dict) -> dict:
                 return {"success": False, "error": err}
             if result.get("success"):
                 tx = result.get("transaction", "")
-                print(f"  Settled on-chain: {tx[:20]}..." if tx else "  Settled")
+                if tx:
+                    network = result.get("network", "")
+                    explorer = (
+                        "https://basescan.org/tx/"
+                        if network == "eip155:8453" or "base" in network.lower()
+                        else ""
+                    )
+                    print(f"  Settled on-chain: {tx}")
+                    if explorer:
+                        print(f"    explorer: {explorer}{tx}")
+                else:
+                    print("  Settled")
             else:
                 er = result.get("errorReason") or result.get("error")
                 payer = result.get("payer", "")
@@ -599,6 +624,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"  Wallet  : {SELLER_ADDRESS}")
     print(f"  Network : {NETWORK} (x402: {CAIP2_NETWORK})")
+    print(f"  Asset   : {USDC_ASSET}  EIP-712 domain name='{USDC_NAME}' version='{USDC_VERSION}'")
     print(f"  BlockRun: {BLOCKRUN_API_URL}")
     verify_label = "*** DISABLED ***" if SKIP_VERIFY else FACILITATOR_URL
     if not SKIP_VERIFY and CDP_API_KEY_ID:
