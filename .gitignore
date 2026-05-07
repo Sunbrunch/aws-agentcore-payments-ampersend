@@ -1,14 +1,58 @@
-# Environment files with secrets
+# ── Secrets and local environment (never commit real credentials) ──
 .env
+.env.*
 !.env.sample
+!**/.env.sample
+!.env.example
+!**/.env.example
 
-# OS
+# OS / editor junk
 .DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
 
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
 .venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+*.cover
+.hypothesis/
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+pip-wheel-metadata/
 
-# Archives
+# Keys and local credential files
+*.pem
+*.p12
+*.pfx
+id_rsa
+id_rsa.pub
+*.pem.key
+credentials.json
+*-credentials.json
+
+# Archives (may contain sensitive exports)
 *.zip
+*.tar.gz
+*.tgz
+
+# Local / scratch
+*.log
+.local/

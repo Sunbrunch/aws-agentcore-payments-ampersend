@@ -1,0 +1,21 @@
+# Cursor: limit context to source and docs; avoid secrets and huge generated specs
+
+# Secrets and local env
+.env
+.env.*
+!.env.sample
+!**/.env.sample
+
+# Python noise
+**/__pycache__/**
+**/.venv/**
+**/venv/**
+**/*.pyc
+
+# Large service models / HTML API specs (still in repo; not useful in chat context)
+quickstart/model/*.json
+quickstart/manual/*.html
+docs/*.html
+
+# Bundled PDFs / heavy binaries
+*.pdf

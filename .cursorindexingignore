@@ -1,0 +1,12 @@
+# Cursor codebase indexing — same intent as .cursorignore (smaller index, no secrets)
+
+.env
+.env.*
+**/__pycache__/**
+**/.venv/**
+**/venv/**
+**/*.pyc
+quickstart/model/*.json
+quickstart/manual/*.html
+docs/*.html
+*.pdf
