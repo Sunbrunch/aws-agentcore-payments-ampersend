@@ -86,6 +86,24 @@ The agent will:
 4. Retry with the payment proof (v1: `X-PAYMENT` header, v2: `PAYMENT-SIGNATURE` header with `accepted` field)
 5. Return the paid content
 
+### Example: Inspect an external Base mainnet merchant without paying
+
+Agent Intelligence Platform (AIP) exposes a source-backed industrial-project answer at
+`https://agent-intelligence-platform.fhochard.workers.dev/v1/signals/premium?country=FR`.
+It costs 0.01 USDC on Base mainnet. This agent already accepts arbitrary merchant URLs;
+use **GET** for both the unsigned challenge and any authorized retry:
+
+```bash
+python agent.py "Use http_request with method GET for https://agent-intelligence-platform.fhochard.workers.dev/v1/signals/premium?country=FR. Show the HTTP 402 payment terms. Do not call process_payment."
+```
+
+The command above does not request a signature or payment. To buy the answer, the
+agent's owner must independently configure a funded Base mainnet payment instrument
+and session, approve the 0.01 USDC purchase, then have the agent process the 402
+and retry the **same GET URL**. AIP's [buyer guide](https://agent-intelligence-platform.fhochard.workers.dev/buyer-agent-guide.md)
+describes the exact network, token, amount and response contract. Testnet funds
+cannot buy from this mainnet merchant.
+
 ### Example: Use Bazaar paid MCP tools
 
 ```bash

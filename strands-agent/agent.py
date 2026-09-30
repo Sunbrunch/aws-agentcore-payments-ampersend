@@ -233,6 +233,7 @@ def http_request(url: str, method: str = "POST", headers: dict = None, body: str
                             get_accepts = get_info.get("accepts", [])
                             if get_accepts:
                                 x402_payload = get_accepts[0]
+                                payment_info = get_info
                                 print(f"  🔄 Re-fetched payment requirements via GET (canonical outputSchema)")
                 except Exception:
                     pass  # Fall back to original payload
@@ -242,12 +243,14 @@ def http_request(url: str, method: str = "POST", headers: dict = None, body: str
                 result["accepted_requirements"] = x402_payload
 
             # Store 402 context for http_request_with_payment_header
-            # Always retry with POST regardless of discovery method
+            # Retry the documented method; a GET-only merchant rejects POST.
             _last_payment_context.update({
                 "url": url,
-                "method": "POST",
+                "method": method.upper(),
                 "x402_version": x402_version,
                 "x402_payload": x402_payload,
+                "resource": payment_info.get("resource"),
+                "extensions": payment_info.get("extensions", {}),
             })
 
     return result
@@ -301,7 +304,7 @@ def http_request_with_payment_header(
     if x402_version >= 2 and x402_payload:
         # x402 v2 PaymentPayload: ResourceInfo on ``resource``; ``accepted`` without
         # resource/description/mimeType/outputSchema (see coinbase/x402 spec).
-        resource_path = x402_payload.get("resource", "")
+        resource = ctx.get("resource") or {"url": url, "description": "", "mimeType": "application/json"}
         accepted = {
             k: v
             for k, v in x402_payload.items()
@@ -309,14 +312,10 @@ def http_request_with_payment_header(
         }
         payment_signature = {
             "x402Version": 2,
-            "resource": {
-                "url": resource_path,
-                "description": x402_payload.get("description", ""),
-                "mimeType": x402_payload.get("mimeType", "application/json"),
-            },
+            "resource": resource,
             "accepted": accepted,
             "payload": proof.get("payload", proof),
-            "extensions": {},
+            "extensions": ctx.get("extensions", {}),
         }
         encoded = b64.b64encode(json.dumps(payment_signature).encode()).decode()
         req_headers["PAYMENT-SIGNATURE"] = encoded
@@ -517,7 +516,7 @@ def call_bazaar_tool(tool_name: str, parameters: dict = None) -> dict:
         # Construct proper x402 header with top-level protocol fields
         crypto_output = pay_result["paymentOutput"]["cryptoX402"]
         if x402_version >= 2:
-            resource_path = x402_payload.get("resource", "")
+            resource = payment_info.get("resource") or {"url": BAZAAR_URL, "description": "", "mimeType": "application/json"}
             accepted = {
                 k: v
                 for k, v in x402_payload.items()
@@ -525,14 +524,10 @@ def call_bazaar_tool(tool_name: str, parameters: dict = None) -> dict:
             }
             payment_header_value = {
                 "x402Version": 2,
-                "resource": {
-                    "url": resource_path,
-                    "description": x402_payload.get("description", ""),
-                    "mimeType": x402_payload.get("mimeType", "application/json"),
-                },
+                "resource": resource,
                 "accepted": accepted,
                 "payload": crypto_output.get("payload", crypto_output),
-                "extensions": {},
+                "extensions": payment_info.get("extensions", {}),
             }
             header_name = "PAYMENT-SIGNATURE"
         else:
@@ -633,7 +628,7 @@ That's it — three tool calls: http_request → process_payment → http_reques
 The retry tool automatically retries with backoff if the merchant still returns
 402 while the on-chain transaction settles.
 
-IMPORTANT: Always use method="POST" for requests to paid endpoints.
+IMPORTANT: Use the merchant's documented HTTP method for both the initial request and retry.
 IMPORTANT: The x402 payment requirement from the merchant contains all the fields
 the ProcessPayment API needs (scheme, network, amount, asset, payTo, extra, etc.).
 Pass it through as-is — do not reconstruct or cherry-pick fields.
